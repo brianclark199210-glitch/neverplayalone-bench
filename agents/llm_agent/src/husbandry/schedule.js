@@ -9,9 +9,6 @@ const FOOD_ITEM = {
 };
 
 const GROW_TICKS = 24000;
-const BREED_MS = 2 * 60 * 1000;
-const FEED_MS = 12 * 60 * 1000;
-const CHECK_MS = 18 * 60 * 1000;
 const FORCE_LEFT_MS = 8 * 60 * 1000;
 const FINISH_LEFT_MS = 3 * 60 * 1000;
 
@@ -69,23 +66,21 @@ function decide(req, stock, clock) {
 
   const left = (clock && clock.leftMs) || 0;
   const ready = missing.length === 0;
-  const force = !ready && !thin && pens >= 1 && left <= FORCE_LEFT_MS;
-  if (!ready && !force) {
-    return {
-      phase: left <= FINISH_LEFT_MS ? "finish" : "prepare",
-      ready: false,
-      force: false,
-      missing,
-    };
-  }
+  if (left <= FINISH_LEFT_MS)
+    return { phase: "finish", ready, force: true, missing };
 
-  const since =
-    !clock || clock.breedAt == null ? 0 : Math.max(0, clock.now - clock.breedAt);
-  let phase = "breed";
-  if (since >= BREED_MS) phase = "feed";
-  if (since >= FEED_MS) phase = "check";
-  if (since >= CHECK_MS || left <= FINISH_LEFT_MS) phase = "finish";
-  return { phase, ready, force, missing };
+  // Search only while every species is still missing a breeding pair.
+  // Once any pair is on hand, breed, feed, and collect on the same loop.
+  const species = Object.entries((req && req.species) || {});
+  const anyPair = species.some(([sp]) => ((have[sp] || {}).adults || 0) >= 2);
+  if (!anyPair && missing.length)
+    return { phase: "prepare", ready: false, force: false, missing };
+  return {
+    phase: "breed",
+    ready,
+    force: !ready && !thin && pens >= 1 && left <= FORCE_LEFT_MS,
+    missing,
+  };
 }
 
 module.exports = {

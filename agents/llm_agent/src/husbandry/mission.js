@@ -210,6 +210,100 @@ async function guarded(name, fn) {
   }
 }
 
+function analyzeWorld(FOOD) {
+  const origin = B.pos().floored();
+  let biome = null;
+  try {
+    const here = B.blockAt(origin);
+    const bio = here && here.biome;
+    if (typeof bio === "string") biome = bio;
+    else if (bio && typeof bio === "object") biome = bio.name || null;
+  } catch {}
+  const surface = {};
+  let land = 0,
+    water = 0,
+    samples = 0;
+  for (let dx = -32; dx <= 32; dx += 8)
+    for (let dz = -32; dz <= 32; dz += 8) {
+      let top = null;
+      try {
+        for (let y = origin.y + 12; y > origin.y - 24; y--) {
+          const block = B.blockAt(new B.Vec3(origin.x + dx, y, origin.z + dz));
+          if (!block) continue;
+          if (
+            B.isAir(block) ||
+            /leaves|_log$|sapling|grass$|fern|flower|dandelion|poppy|tulip|orchid|daisy|cornflower|lilac|peony|rose_bush/.test(
+              block.name,
+            )
+          )
+            continue;
+          if (block.boundingBox === "empty" && !/water|lava/.test(block.name))
+            continue;
+          top = block.name;
+          break;
+        }
+      } catch {}
+      if (!top) continue;
+      samples++;
+      surface[top] = (surface[top] || 0) + 1;
+      if (/water|lava|ice|kelp|seagrass/.test(top)) water++;
+      else land++;
+    }
+  const dominant = Object.entries(surface).sort((a, b) => b[1] - a[1])[0];
+  const ground = (dominant && dominant[0]) || "";
+  const terrain =
+    !dominant
+      ? "unknown"
+      : water > land
+        ? "water"
+        : /sand/.test(ground)
+          ? "sandy"
+          : /snow|ice/.test(ground)
+            ? "snowy"
+            : /stone|deepslate|gravel|tuff|andesite|diorite|granite/.test(ground)
+              ? "rocky"
+              : /grass_block|podzol|mycelium|dirt|mud|moss/.test(ground)
+                ? "grassy"
+                : "mixed";
+  let nature = {};
+  try {
+    if (FOOD && FOOD.nature) nature = FOOD.nature(48);
+  } catch {}
+  let landscape = [];
+  try {
+    if (FOOD && FOOD.directionScores)
+      landscape = FOOD.directionScores(origin)
+        .slice(0, 3)
+        .map((dir) => ({
+          deg: dir.deg,
+          landScore: dir.score,
+          water: dir.water,
+        }));
+  } catch {}
+  const animals = census(96);
+  const resources = {};
+  try {
+    for (const item of B.allItems())
+      resources[item.name] = (resources[item.name] || 0) + item.count;
+  } catch {}
+  const report = {
+    terrain,
+    biome,
+    dominant: ground || null,
+    samples,
+    land,
+    water,
+    surface,
+    nature,
+    landscape,
+    animals,
+    resources,
+    at: { x: origin.x, y: origin.y, z: origin.z },
+  };
+  B.log("ah world", report);
+  return report;
+}
+
 const END_GUARD_MS = 12e3;
 
 async function endgame(PEN, HERD, pen, targets) {
@@ -377,6 +471,18 @@ async function run() {
   if (HERD && HERD.H && process.env.AH_EARLY_RATE !== "0") HERD.H.early = EARLY;
   const ctx = { targets, kit, t0: B.T0 };
   HERD && HERD.watch(targets);
+  const world = analyzeWorld(FOOD);
+  const nearby = Object.keys(targets).filter(
+    (sp) => (world.animals[sp] || []).length,
+  );
+  B.log("ah animals", {
+    required: targets,
+    nearby,
+    missing: Object.keys(targets).filter((sp) => !nearby.includes(sp)),
+    distances: world.animals,
+    terrain: world.terrain,
+    biome: world.biome,
+  });
   if (FOOD && FOOD.gather && B.timeLeft() > 3 * 60 * 1000) {
     const need = {};
     for (const [sp, row] of Object.entries(foodPlan.species))
@@ -386,7 +492,9 @@ async function run() {
       need,
       left_s: Math.round(B.timeLeft() / 1000),
     });
-    const budget = Math.min(4 * 60 * 1000, B.timeLeft() - 3 * 60 * 1000);
+    const budget = nearby.length
+      ? Math.min(90 * 1000, B.timeLeft() - 3 * 60 * 1000)
+      : Math.min(35 * 1000, B.timeLeft() - 3 * 60 * 1000);
     if (budget > 15000 && Object.keys(need).length)
       await guarded("carry food", () =>
         FOOD.gather({ ...ctx, autoCrops: false }, need, B.now() + budget),

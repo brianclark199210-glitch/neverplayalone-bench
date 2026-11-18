@@ -6,6 +6,7 @@ const Guard = require("../enclosure/protection");
 const Flags = require("../planning/options");
 const Schedule = require("./schedule");
 const Planner = require("./planner");
+const Strategy = require("./strategy");
 
 const C2 = !!require("../planning/options").C2_PIG_FEASIBILITY;
 
@@ -1108,115 +1109,89 @@ async function feedBabies(ctx, onlySp) {
   let given = 0;
   for (const sp of Object.keys(H.targets)) {
     if (onlySp && sp !== onlySp) continue;
-
-    const babies = ours(sp)
-      .filter((e) => isBaby(e) && !realOut(e.position))
-      .sort(
-        (a, b) =>
-          feedsNeeded(rec(a), B.timeLeft()) - feedsNeeded(rec(b), B.timeLeft()),
-      );
+    const left = B.timeLeft();
+    const babies = ours(sp).filter((e) => isBaby(e) && !realOut(e.position));
+    const needs = [];
     for (const e of babies) {
       const r = rec(e);
-      let need = feedsNeeded(r, B.timeLeft());
-      if (need <= 0 || need >= 99) continue;
-
-      if (sp === "sheep" && now() - r.bornAt < 1.5e5 && B.timeLeft() > 2.4e5)
+      if (sp === "sheep" && r.bornAt && now() - r.bornAt < 1.5e5 && left > 2.4e5)
         continue;
-      if (foodCount(sp) > 0 && !inside(B.pos()) && !(await goIn()))
-        return given;
-      if (foodCount(sp) < need) {
-        if (now() - (r.shortLog || 0) > 3e4)
-          ((r.shortLog = now()),
-            log("baby food short", {
+      const need = feedsNeeded(r, left);
+      const rem_s = Math.round((r.bornAt ? remTicks(r) : GROW_TICKS) / 20);
+      if (need <= 0) {
+        if (now() - (r.spareLog || 0) > 6e4)
+          ((r.spareLog = now()),
+            log("spare food", {
               sp,
               id: e.id,
-              need,
-              have: foodCount(sp),
+              rem_s,
+              why: "grows before the deadline",
             }));
-        if (foodCount(sp) <= 0) continue;
+        continue;
       }
+      if (need >= 99) continue;
+      needs.push({ id: e.id, feeds: need, e, r, rem_s });
+    }
+    const missing = Math.max(0, (H.targets[sp] || 0) - planned(sp));
+    const nb = feedsForNewBaby(left, 3e4, sp);
+    const breeders = animals(sp).filter(
+      (e) => !realOut(e.position) && breedable(e),
+    ).length;
+    const breedCost = missing > 0 && breeders >= 2 && nb < 99 ? 2 + nb : 0;
+    const alloc = Strategy.allocate(
+      needs.map((row) => ({ id: row.id, feeds: row.feeds })),
+      foodCount(sp),
+      breedCost,
+    );
+    if (alloc.reserved && now() - (H.reserveLog || 0) > 3e4)
+      ((H.reserveLog = now()),
+        log("reserve food", {
+          sp,
+          reserved: alloc.reserved,
+          food: foodCount(sp),
+          for: "breeding",
+        }));
+    const byId = new Map(needs.map((row) => [row.id, row]));
+    for (const grant of alloc.grant) {
+      const row = byId.get(grant.id);
+      if (!row || !valid(row.e)) continue;
+      if (foodCount(sp) > alloc.reserved && !inside(B.pos()) && !(await goIn()))
+        return given;
       let n = 0;
-      while (need > 0 && foodCount(sp) > 0) {
-        const f = await feed(e, sp, "grow");
-        if (!f) break;
-        const s = Math.floor(Math.floor(remTicks(r) / 20) * 0.1);
-        r.forced += s * 20;
-        r.feedForced = (r.feedForced || 0) + s * 20;
-        r.lastFeedAt = now();
-        r.feeds++;
+      while (
+        n < grant.n &&
+        foodCount(sp) > alloc.reserved &&
+        feedsNeeded(row.r, B.timeLeft()) > 0
+      ) {
+        const fed = await feed(row.e, sp, "grow");
+        if (!fed) break;
+        const saved = Math.floor(Math.floor(remTicks(row.r) / 20) * 0.1);
+        row.r.forced += saved * 20;
+        row.r.feedForced = (row.r.feedForced || 0) + saved * 20;
+        row.r.lastFeedAt = now();
+        row.r.feeds++;
         n++;
         given++;
         H.stats.babyFeeds[sp] = (H.stats.babyFeeds[sp] || 0) + 1;
-        need = feedsNeeded(r, B.timeLeft());
       }
-
-      const chickGrow =
-        sp === "chicken" &&
-        process.env.AH_CHICK_GROW !== "0" &&
-        need <= 0 &&
-        planned(sp) < (H.targets[sp] || 0) &&
-        (B.timeLeft() > 4.5e5 ||
-          (B.timeLeft() > 2e5 &&
-            animals(sp).filter(
-              (a) =>
-                a !== e && !isBaby(a) && inside(a.position) && breedable(a),
-            ).length %
-              2 ===
-              1));
-      if (
-        ((sp === "rabbit" &&
-          process.env.AH_KIT_GROW !== "0" &&
-          B.timeLeft() > 4.5e5) ||
-          chickGrow) &&
-        need <= 0 &&
-        planned(sp) < (H.targets[sp] || 0)
-      ) {
-        let owed = 0;
-        for (const o of babies)
-          if (o !== e)
-            owed += Math.max(
-              0,
-              Math.min(40, feedsNeeded(rec(o), B.timeLeft())),
-            );
-
-        const nbLeft = Math.max(
-          6e4,
-          B.timeLeft() - (B.timeLeft() > 4.5e5 ? 3e5 : 0),
-        );
-        const late =
-          sp === "chicken"
-            ? 2 + Math.min(40, feedsForNewBaby(nbLeft - 6e4, 3e4, sp) % 99)
-            : 0;
-        const reserve = 4 + owed + late;
-        let k = 0;
-        while (
-          foodCount(sp) > reserve &&
-          remTicks(r) > 400 &&
-          k < 30 &&
-          inside(B.pos())
-        ) {
-          const f = await feed(e, sp, "grow");
-          if (!f) break;
-          const s = Math.floor(Math.floor(remTicks(r) / 20) * 0.1);
-          r.forced += s * 20;
-          r.feedForced = (r.feedForced || 0) + s * 20;
-          r.lastFeedAt = now();
-          r.feeds++;
-          k++;
-          given++;
-          H.stats.babyFeeds[sp] = (H.stats.babyFeeds[sp] || 0) + 1;
-        }
-        if (k)
-          log("kit grow", {
+      if (n)
+        log("growth", {
+          sp,
+          id: row.e.id,
+          fed: n,
+          need: grant.n,
+          rem_s: Math.round(remTicks(row.r) / 20),
+          natural: feedsNeeded(row.r, B.timeLeft()) <= 0,
+          food_left: foodCount(sp),
+        });
+      else if (foodCount(sp) < grant.n && now() - (row.r.shortLog || 0) > 3e4)
+        ((row.r.shortLog = now()),
+          log("baby food short", {
             sp,
-            id: e.id,
-            n: k,
-            total: r.feeds,
-            rem_s: Math.round(remTicks(r) / 20),
-            food_left: foodCount(sp),
-            reserve,
-          });
-      }
+            id: row.e.id,
+            need: grant.n,
+            have: foodCount(sp),
+          }));
     }
   }
   return given;
@@ -1307,6 +1282,42 @@ function scoutPoint(sp) {
     }
   return best;
 }
+async function forageAlong(sp, untilMs) {
+  if (!FOODMOD || !FOODMOD.gather || !B.hasBot()) return;
+  if (now() - (H.forageAt || 0) < 2e4) return;
+  if (now() > untilMs - 3e3) return;
+  const nb = feedsForNewBaby(B.timeLeft(), 3e4, sp);
+  const want = nb >= 99 ? 4 : Math.min(16, Math.max(4, 2 + Math.max(0, nb)));
+  if (foodCount(sp) >= want) return;
+  H.forageAt = now();
+  const before = foodCount(sp);
+  const end = Math.min(untilMs - 1e3, now() + 8e3);
+  const prevHome = FOODMOD.F && FOODMOD.F.home;
+  const prevDist = FOODMOD.F && FOODMOD.F.maxDist;
+  try {
+    await FOODMOD.gather(
+      {
+        autoCrops: false,
+        home: B.feet(),
+        maxDist: 28,
+        stopWhen: () => now() >= end,
+      },
+      { [sp]: want },
+      end,
+    );
+  } catch (e) {
+    log("forage failed", { sp, err: String(e).slice(0, 120) });
+  } finally {
+    if (FOODMOD.F) {
+      FOODMOD.F.home = prevHome;
+      FOODMOD.F.maxDist = prevDist;
+    }
+  }
+  const got = foodCount(sp) - before;
+  if (got > 0)
+    log("forage", { sp, got, food: foodCount(sp), while: "searching" });
+}
+
 async function scout(sp, untilMs) {
   const pt = scoutPoint(sp);
   if (!pt) return false;
@@ -1318,6 +1329,7 @@ async function scout(sp, untilMs) {
     left_s: Math.round(B.timeLeft() / 1e3),
   });
   if (!(await goOut(pt.pos))) return false;
+  await forageAlong(sp, untilMs);
   await holdFood(sp);
   B.setMovements({ sprint: true, maxDropDown: 2 });
   try {
@@ -1929,6 +1941,7 @@ async function lureTrip0(sp, maxD, untilMs) {
   });
   if (!(await goOut(grp.e.position))) return [];
 
+  await forageAlong(sp, untilMs);
   await holdFood(sp);
 
   const sp2 = Object.keys(H.targets).find(
@@ -3090,6 +3103,29 @@ function preferSite(targets) {
   return p;
 }
 
+function strategyRow(sp, goal) {
+  const left = B.timeLeft();
+  return {
+    species: sp,
+    goal: goal | 0,
+    done: planned(sp),
+    adults: animals(sp).filter((e) => isKnownAdult(e) && !realOut(e.position))
+      .length,
+    breedable: animals(sp).filter((e) => !realOut(e.position) && breedable(e))
+      .length,
+    food: foodCount(sp),
+    leftMs: left,
+    tps: (H.tps && H.tps.f) || 1,
+    newBabyFeeds: feedsForNewBaby(left, 3e4, sp),
+    babies: ours(sp)
+      .filter((e) => isBaby(e) && !realOut(e.position))
+      .map((e) => {
+        const r = rec(e);
+        return { id: e.id, remTicks: r.bornAt ? remTicks(r) : GROW_TICKS };
+      }),
+  };
+}
+
 async function raise(ctx, pen, targets, deadlineMs) {
   hook();
   H.pen = pen && pen.registered !== false ? pen : null;
@@ -3253,7 +3289,7 @@ async function raise(ctx, pen, targets, deadlineMs) {
         }
 
         const sch = applySchedule(targets);
-        if (sch.phase !== "prepare" && (await feedBabies(ctx))) continue;
+        if (await feedBabies(ctx)) continue;
         if (sch.phase === "prepare" && B.timeLeft() > 3 * 60 * 1000) {
           await prepareHerd(ctx, targets, sch);
           continue;
@@ -3337,17 +3373,32 @@ async function raise(ctx, pen, targets, deadlineMs) {
         const left = B.timeLeft();
 
         const pigKit = C2 && pigMode() === "kit";
-        const rank = (sp) =>
-          (sp === "pig" &&
-          (pigKit ||
-            (planned("pig") === 0 &&
-              foodCount("pig") >= 2 &&
-              now() - (H.raiseAt || now()) < 3.6e5))
-            ? 10
-            : 0) +
-          (sp === "rabbit" ? -10 : 0) +
-          Math.min(foodCount(sp), 4);
-        const order = Object.keys(targets).sort((a, b) => rank(b) - rank(a));
+        const outlook = {};
+        for (const sp of Object.keys(targets))
+          outlook[sp] = Strategy.planSpecies(strategyRow(sp, targets[sp]));
+        if (now() - (H.priorityLog || 0) > 2e4) {
+          H.priorityLog = now();
+          const ranked = Object.keys(targets).sort(
+            (a, b) => outlook[b].chance - outlook[a].chance,
+          );
+          log("priority", {
+            left_s: Math.round(B.timeLeft() / 1e3),
+            order: ranked.map((sp) => ({
+              sp,
+              action: outlook[sp].action,
+              chance: +outlook[sp].chance.toFixed(2),
+              reason: outlook[sp].reason,
+              natural: outlook[sp].natural,
+              accelerate: outlook[sp].accelerate,
+              food: foodCount(sp),
+            })),
+          });
+        }
+        const order = Object.keys(targets).sort((a, b) => {
+          if (pigKit && a === "pig") return -1;
+          if (pigKit && b === "pig") return 1;
+          return outlook[b].chance - outlook[a].chance;
+        });
         for (const sp of order) {
           if (pigKit && sp !== "pig" && acted) break;
 
@@ -3423,18 +3474,15 @@ async function raise(ctx, pen, targets, deadlineMs) {
           }
           if (need <= 0) continue;
 
-          const decision = Planner.decide({
-            babies: ours(sp).filter((e) => isBaby(e) && !realOut(e.position))
-              .length,
-            knownAdults: animals(sp).filter(
-              (e) => isKnownAdult(e) && !realOut(e.position),
-            ).length,
+          const row = strategyRow(sp, goal);
+          let decision = Planner.decide({
+            ...row,
+            babyRows: row.babies,
+            babies: row.babies.length,
+            knownAdults: row.adults,
             unknown: animals(sp).filter(
               (e) => ageOf(e) === "unknown" && !realOut(e.position),
             ).length,
-            food: foodCount(sp),
-            goal,
-            done: have,
           });
           if (now() - ((H.planAt || {})[sp] || 0) > 2e4) {
             H.planAt = H.planAt || {};
@@ -3444,13 +3492,31 @@ async function raise(ctx, pen, targets, deadlineMs) {
               decision: decision.type,
               reason: decision.reason,
               priority: decision.priority,
+              chance: decision.chance,
+              natural: decision.plan && decision.plan.natural,
+              accelerate: decision.plan && decision.plan.accelerate,
+              breed_cost: decision.plan && decision.plan.breedCost,
+              left_s: Math.round(left / 1e3),
             });
           }
-          if (decision.type === "feed_baby") continue;
+          if (decision.type === "done" || decision.type === "hold") continue;
+          if (decision.type === "feed_baby") {
+            const fedNow = await feedBabies(ctx, sp);
+            if (fedNow) acted = true;
+            const cost = (decision.plan && decision.plan.breedCost) || 0;
+            const short = (decision.plan && decision.plan.stillShort) || 0;
+            if (cost >= 2 && short > 0 && foodCount(sp) >= cost)
+              decision = {
+                ...decision,
+                type: "breed",
+                reason: "growth food spent; breed with the reserve",
+              };
+            else continue;
+          }
 
           const nb = feedsForNewBaby(left, 3e4, sp);
           const per = 2 + (nb >= 99 ? 99 : nb);
-          if (nb >= 99) continue;
+          if (nb >= 99 && decision.type !== "blocked") continue;
           let bre = animals(sp).filter(
             (e) =>
               inside(e.position) && margin(e.position) >= 1.2 && breedable(e),
@@ -3815,6 +3881,34 @@ async function prepareHerd(ctx, targets, decision) {
   const hungry = Object.keys(req.species).find(
     (sp) => st.species[sp].food < req.species[sp].food,
   );
+  const short = Object.keys(req.species).find(
+    (sp) => st.species[sp].adults < req.species[sp].adults,
+  );
+  if (short) {
+    if (hungry && FOODMOD && FOODMOD.gather && B.timeLeft() > 3 * 60 * 1000) {
+      const row = req.species[hungry];
+      log("schedule carry food", {
+        species: hungry,
+        item: row.food_item,
+        have: st.species[hungry].food,
+        need: row.food,
+        while: "searching",
+      });
+      await FOODMOD.gather(
+        { ...ctx, autoCrops: false },
+        { [hungry]: Math.min(row.food, 8) },
+        now() + Math.min(12e3, B.timeLeft() - 3 * 60 * 1000),
+      );
+    }
+    log("schedule gather", {
+      species: short,
+      adults: st.species[short].adults,
+      need: req.species[short].adults,
+      missing: decision.missing,
+    });
+    await lureTrip(short, 160, now() + Math.min(4.5e4, B.timeLeft() - 3e4));
+    return;
+  }
   if (hungry && FOODMOD && FOODMOD.gather) {
     const row = req.species[hungry];
     log("schedule carry food", {
@@ -3830,19 +3924,6 @@ async function prepareHerd(ctx, targets, decision) {
       { [hungry]: row.food },
       now() + Math.min(6e4, B.timeLeft() - 3 * 60 * 1000),
     );
-    return;
-  }
-  const short = Object.keys(req.species).find(
-    (sp) => st.species[sp].adults < req.species[sp].adults,
-  );
-  if (short) {
-    log("schedule gather", {
-      species: short,
-      adults: st.species[short].adults,
-      need: req.species[short].adults,
-      missing: decision.missing,
-    });
-    await lureTrip(short, 160, now() + Math.min(4.5e4, B.timeLeft() - 3e4));
     return;
   }
   log("schedule waiting", { missing: decision.missing });

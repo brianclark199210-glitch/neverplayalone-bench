@@ -1,44 +1,39 @@
 "use strict";
 
-// Priority taken from the animal-mission planner: feed a known baby before
-// starting another pair, and never treat an unknown-age animal as an adult.
+const Strategy = require("./strategy");
+
+// Feed a baby only when it will miss adulthood. Breed when the remaining
+// time can still produce an adult, and leave naturally growing babies alone.
 function decide(row) {
-  const babies = row.babies || 0;
-  const known = row.knownAdults || 0;
-  const unknown = row.unknown || 0;
-  const food = row.food || 0;
-  const goal = row.goal || 0;
-  const done = row.done || 0;
-  if (goal > 0 && done >= goal)
-    return { type: "done", priority: 0, reason: "objective met" };
-  if (babies > 0 && food > 0)
-    return {
-      type: "feed_baby",
-      priority: 100,
-      reason: "Accelerate a nearby baby animal",
-    };
-  if (known >= 2 && food >= 2)
-    return {
-      type: "breed",
-      priority: 90,
-      reason: "Breed two observed adult animals",
-    };
-  if (food <= 0)
-    return {
-      type: "blocked",
-      priority: 70,
-      reason: "Missing breeding food",
-    };
-  if (known < 2)
-    return {
-      type: "blocked",
-      priority: 70,
-      reason: `Need two adults; found ${known} known adults and ${unknown} unknown-age animals`,
-    };
+  const babies = row.babyRows && row.babyRows.length
+    ? row.babyRows
+    : Array.from({ length: row.babies || 0 }, () => ({ remTicks: Strategy.GROW_TICKS }));
+  const plan = Strategy.planSpecies({
+    species: row.species,
+    goal: row.goal || 0,
+    done: row.done || 0,
+    adults: row.knownAdults || 0,
+    breedable: row.breedable,
+    food: row.food || 0,
+    leftMs: row.leftMs == null ? 20 * 60 * 1000 : row.leftMs,
+    tps: row.tps || 1,
+    newBabyFeeds: row.newBabyFeeds,
+    babies,
+  });
+  const type = {
+    feed: "feed_baby",
+    breed: "breed",
+    search: "search",
+    collect: "blocked",
+    hold: "hold",
+    done: "done",
+  }[plan.action] || plan.action;
   return {
-    type: "breed",
-    priority: 90,
-    reason: "Breed two observed adult animals",
+    type,
+    priority: plan.priority,
+    reason: plan.reason,
+    chance: plan.chance,
+    plan,
   };
 }
 
