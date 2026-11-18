@@ -7,12 +7,13 @@
 const mineflayer = require('mineflayer');
 const Vec3 = require('vec3');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const { createErrorLog } = require('./error_log');
 
 const host = process.env.NPABENCH_HOST || '127.0.0.1';
 const port = parseInt(process.env.NPABENCH_PORT || '25565', 10);
 const username = process.env.NPABENCH_AGENT_USERNAME || 'npabench_agent';
 const prompt = process.env.NPABENCH_AGENT_PROMPT || '';
-const timeoutSec = parseInt(process.env.NPABENCH_TIMEOUT_SECONDS || '1200', 10);
+const timeoutSec = Math.min(20 * 60, parseInt(process.env.NPABENCH_TIMEOUT_SECONDS || '1200', 10) || 20 * 60);
 
 const LOG_ITEMS = [
   'oak_log',
@@ -64,8 +65,9 @@ function emit(kind, data = {}) {
   process.stdout.write(JSON.stringify({ kind, data, t: Date.now() / 1000 }) + '\n');
 }
 
-function plainPos(pos) {
-  return {
+let errorLog = null;
+function logError(msg, extra = {}) {
+  if (!errorLog) errorLog = createErrorLog();
     x: Math.round(pos.x * 100) / 100,
     y: Math.round(pos.y * 100) / 100,
     z: Math.round(pos.z * 100) / 100,
@@ -244,7 +246,7 @@ async function digOneNearbyBlock(bot, tried) {
 }
 
 async function randomWalk(bot, spawnPos) {
-  const pos = bot.entity.position;
+    logError('dig failed', { block: block.name, pos: plainPos(block.position), err: String(e) });
   const farFromSpawn = distanceXZ(pos, spawnPos) > 15;
   const angle = farFromSpawn
     ? Math.atan2(spawnPos.x - pos.x, spawnPos.z - pos.z)
@@ -374,9 +376,9 @@ process.on('unhandledRejection', (err) => emit('error', { msg: 'unhandled reject
 bot.on('end', () => {
   emit('info', { msg: 'disconnected' });
   process.exit(0);
-});
-
-async function shutdown() {
+bot.on('kicked', (reason) => logError('kicked', { reason: String(reason) }));
+bot.on('error', (err) => logError('bot error', { err: String(err) }));
+process.on('unhandledRejection', (err) => logError('unhandled rejection', { err: String(err) }));
   stopRequested = true;
   bot.clearControlStates();
   try { bot.pathfinder.stop(); } catch (_) { /* ignore */ }

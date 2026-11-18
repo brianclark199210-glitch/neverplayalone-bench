@@ -6,12 +6,13 @@
 
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const { createErrorLog } = require('./error_log');
 
 const host = process.env.NPABENCH_HOST || '127.0.0.1';
 const port = parseInt(process.env.NPABENCH_PORT || '25565', 10);
 const username = process.env.NPABENCH_AGENT_USERNAME || 'npabench_agent';
 const prompt = process.env.NPABENCH_AGENT_PROMPT || '';
-const timeoutSec = parseInt(process.env.NPABENCH_TIMEOUT_SECONDS || '1200', 10);
+const timeoutSec = Math.min(20 * 60, parseInt(process.env.NPABENCH_TIMEOUT_SECONDS || '1200', 10) || 20 * 60);
 
 const LOG_NAMES = [
   'oak_log',
@@ -26,6 +27,13 @@ const LOG_NAMES = [
 
 function emit(kind, data = {}) {
   process.stdout.write(JSON.stringify({ kind, data, t: Date.now() / 1000 }) + '\n');
+}
+
+let errorLog = null;
+function logError(msg, extra = {}) {
+  if (!errorLog) errorLog = createErrorLog();
+  errorLog.write(msg, extra);
+  emit('error', { msg, ...extra });
 }
 
 function targetFromGoal(goal) {
@@ -75,7 +83,7 @@ async function equipAxe(bot) {
     await bot.equip(axe, 'hand');
     return true;
   } catch (e) {
-    emit('error', { msg: 'equip axe failed', item: axe.name, err: String(e) });
+    logError('equip axe failed', { item: axe.name, err: String(e) });
     return false;
   }
 }
@@ -126,7 +134,7 @@ async function returnToSpawn(bot, spawnPos) {
     await safeWait(bot, 5);
     return true;
   } catch (e) {
-    emit('error', { msg: 'return to spawn failed', err: String(e) });
+    logError('return to spawn failed', { err: String(e) });
     return false;
   }
 }
@@ -207,7 +215,7 @@ bot.once('spawn', async () => {
       await safeWait(bot, 4);
       await collectNearbyDrops(bot);
     } catch (e) {
-      emit('error', { msg: 'dig failed', block: block.name, err: String(e) });
+      logError('dig failed', { block: block.name, err: String(e) });
       await safeWait(bot, 8);
     }
   }
@@ -220,9 +228,9 @@ bot.on('death', () => {
   emit('dead', { msg: 'log gatherer died' });
   try { bot.respawn(); } catch (e) { /* ignore */ }
 });
-bot.on('kicked', (reason) => emit('error', { msg: 'kicked', reason: String(reason) }));
-bot.on('error', (err) => emit('error', { msg: 'bot error', err: String(err) }));
-process.on('unhandledRejection', (err) => emit('error', { msg: 'unhandled rejection', err: String(err) }));
+bot.on('kicked', (reason) => logError('kicked', { reason: String(reason) }));
+bot.on('error', (err) => logError('bot error', { err: String(err) }));
+process.on('unhandledRejection', (err) => logError('unhandled rejection', { err: String(err) }));
 bot.on('end', () => {
   emit('info', { msg: 'disconnected' });
   process.exit(0);

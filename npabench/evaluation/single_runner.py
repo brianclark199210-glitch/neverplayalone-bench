@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
@@ -50,6 +52,22 @@ class _AgentPhaseState:
 
 
 def run_single_evaluation(
+def _forward_trace_events(
+    agent_run_trace: AgentRunTrace,
+    on_event: Callable[[TraceEvent], None] | None,
+) -> None:
+    if on_event is None:
+        return
+
+    def listener(event: TraceEvent) -> None:
+        try:
+            on_event(event)
+        except Exception:
+            log.exception("trace listener failed")
+
+    agent_run_trace.watch(listener)
+
+
     mission: Mission,
     mission_config: MissionConfig,
     agent_run_slot: AgentRunSlot,
@@ -61,6 +79,7 @@ def run_single_evaluation(
     output_dir: Path,
     task_seed: int | None = None,
 ) -> "AgentRunReport":
+    on_event: Callable[[TraceEvent], None] | None = None,
     from npabench.evaluation.evaluate import AgentRunReport
 
     output_dir = _prepare_output_dir(output_dir)
@@ -70,6 +89,7 @@ def run_single_evaluation(
         started_at=time.time(),
     )
     phase = _AgentPhaseState()
+    _forward_trace_events(agent_run_trace, on_event)
     recorder: Recorder | None = None
     movement_monitor: MovementMonitor | None = None
     craft_log: CraftAnnouncer | None = None

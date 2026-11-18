@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NPA Mining</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <div class="brand">
+        <span class="mark">NPA</span>
+        <div>
+          <p class="k">Never Play Alone</p>
+          <h1>Mining</h1>
+        </div>
+      </div>
+      <p id="status" class="status idle">Idle</p>
+    </header>
+
+    <article class="panel view-panel">
+      <div class="row">
+        <p class="k">Terrain</p>
+        <p id="view-pos" class="muted">The real Minecraft world appears when the agent joins.</p>
+      </div>
+      <iframe id="world" title="Minecraft world" hidden></iframe>
+    </article>
+
+    <div class="layout">
+      <section class="stack">
+        <article class="panel">
+          <p class="k">Mission id</p>
+          <h2 id="mission-id">—</h2>
+          <p class="k">Content</p>
+          <p id="mission-content" class="content">Press Mine. A random seed runs animal husbandry.</p>
+          <p id="mission-meta" class="muted"></p>
+          <div id="targets" class="targets"></div>
+        </article>
+
+        <article class="panel">
+          <div class="row">
+            <p class="k">Mission progress</p>
+            <p id="progress-label" class="muted">0%</p>
+          </div>
+          <div id="scorebar" class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="progress-label">
+            <span id="progress-fill"></span>
+          </div>
+          <p id="score-line" class="muted">Score appears when the run finishes.</p>
+        </article>
+
+        <article class="panel">
+          <div class="row">
+            <p class="k">Mission timeline</p>
+            <p id="time-label" class="muted">20:00</p>
+          </div>
+          <div id="timebar" class="bar time" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" aria-label="Time remaining">
+            <span id="time-fill"></span>
+          </div>
+          <ol id="timeline" class="timeline"></ol>
+        </article>
+      </section>
+
+      <section class="stack controls">
+        <form id="mine-form" class="panel">
+          <p class="k">Mission</p>
+          <p class="muted">Mine draws a random seed and runs llm_agent on animal husbandry.</p>
+          <p id="form-error" class="error" role="alert"></p>
+          <button id="mine" type="submit">Mine</button>
+        </form>
+
+        <article class="panel logs-panel">
+          <label class="k" for="logs">Agent action logs</label>
+          <textarea id="logs" disabled spellcheck="false" aria-label="Agent action logs"></textarea>
+        </article>
+      </section>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

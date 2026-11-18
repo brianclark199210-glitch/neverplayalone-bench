@@ -106,6 +106,17 @@ def run_cmd(
         raise click.ClickException(str(e)) from e
 
 
+@main.command("serve")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", type=int, default=8765, show_default=True)
+def serve_cmd(host: str, port: int) -> None:
+    """Open the mining console in a browser."""
+    from npabench.console.server import serve
+
+    click.echo(f"Mining console at http://{host}:{port}")
+    serve(host, port)
+
+
 @main.command("build-agent-image")
 def build_agent_image_cmd() -> None:
     from npabench.agents import ensure_agent_image

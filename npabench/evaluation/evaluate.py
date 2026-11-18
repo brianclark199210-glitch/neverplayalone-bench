@@ -7,15 +7,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Literal
 
 from npabench.agents.base import AgentSpec
+from npabench.evaluation.run_trace import TraceEvent
 from npabench.config import DEFAULT_BASE_GAME_PORT, DEFAULT_BASE_RCON_PORT, RESULTS_DIR
 from npabench.evaluation.batch_runner import run_batch_evaluation
 from npabench.evaluation.reference_world import ReferenceWorldBuilder
 from npabench.evaluation.run_slot import AgentRunSlot
 from npabench.evaluation.single_runner import run_single_evaluation
-from npabench.missions.base import MissionConfig
+from npabench.missions.base import MissionConfig, Task
 from npabench.missions.registry import get_mission
 from npabench.recording.recorder import RECORDER_DIR, is_available as recorder_available
 
@@ -85,6 +87,12 @@ def _recording_summary(record: bool) -> dict[str, Any]:
     }
 
 
+def _notify(on_event: Callable[[TraceEvent], None] | None, message: str, **data: Any) -> None:
+    if on_event is None:
+        return
+    on_event(TraceEvent(kind="info", data={"msg": message, **data}))
+
+
 def evaluate_single_agent(
     agent: AgentSpec | str | Path,
     *,
@@ -98,16 +106,22 @@ def evaluate_single_agent(
     base_rcon_port: int = DEFAULT_BASE_RCON_PORT,
     sidecar_containers: tuple[str, ...] = (),
     container_prefix: str = "npabench-eval",
+    task: Task | None = None,
+    materialize_prompt: bool = True,
+    on_event: Callable[[TraceEvent], None] | None = None,
 ) -> AgentRunReport:
     mission = get_mission(mission_id)
     base_config = _load_mission_config(mission, config_path)
-    task = mission.generate_task(base_config, seed)
+    if task is None:
+        task = mission.generate_task(base_config, seed)
     run_agent = _normalize_agent(agent)
     root_output_dir = _default_run_output_dir(output_dir)
     root_output_dir.mkdir(parents=True, exist_ok=True)
-    task = mission.materialize_task(base_config, task, root_output_dir)
+    if materialize_prompt:
+        task = mission.materialize_task(base_config, task, root_output_dir)
     mission_config = mission.build_mission_config(base_config, task)
     (root_output_dir / "task.json").write_text(task.model_dump_json(indent=2))
+    _notify(on_event, "generating random terrain", minecraft_seed=task.minecraft_seed)
     reference_world_dir = ReferenceWorldBuilder().build(
         mission,
         mission_config,
@@ -116,6 +130,7 @@ def evaluate_single_agent(
         base_rcon_port=base_rcon_port,
         container_prefix=f"{container_prefix}-template",
     )
+    _notify(on_event, "starting minecraft server", port=base_game_port)
     agent_output_dir = root_output_dir / "agents" / safe_name(run_agent.name)
     agent_run_slot = AgentRunSlot.allocate(
         slot_id=0,
@@ -135,6 +150,7 @@ def evaluate_single_agent(
         agent_mode=agent_mode,
         output_dir=agent_output_dir,
         task_seed=task.seed,
+        on_event=on_event,
     )
 
 

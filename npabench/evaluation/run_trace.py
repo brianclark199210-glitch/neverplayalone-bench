@@ -5,7 +5,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from collections.abc import Callable
+
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class TraceEvent(BaseModel):
@@ -30,9 +32,17 @@ class AgentRunTrace(BaseModel):
     timed_out: bool = False
     events: list[TraceEvent] = Field(default_factory=list)
     final_state: FinalAgentState = Field(default_factory=FinalAgentState)
+    _listener: Callable[[TraceEvent], None] | None = PrivateAttr(default=None)
+
+    def watch(self, listener: Callable[[TraceEvent], None]) -> None:
+        self._listener = listener
 
     def append(self, event: TraceEvent) -> None:
         self.events.append(event)
+        listener = self._listener
+        if listener is None:
+            return
+        listener(event)
 
     def dump(self, path: str | Path) -> None:
         Path(path).write_text(self.model_dump_json(indent=2))
