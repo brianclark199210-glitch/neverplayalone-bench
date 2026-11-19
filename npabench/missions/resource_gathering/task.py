@@ -4,6 +4,7 @@ import random
 from typing import Literal
 
 from npabench.missions.base import Task, TaskTarget
+from npabench.missions.world_seed import supported_world_seed
 from npabench.missions.resource_gathering.config_schema import (
     MenuEntry,
     ResourceGatheringMissionConfig,
@@ -22,7 +23,7 @@ def generate_task(
 ) -> Task:
     rng = random.Random(seed)
     targets = resolve_task_targets(base_config, rng)
-    minecraft_seed = rng.getrandbits(64)
+    minecraft_seed = supported_world_seed(seed)
     selected_task_id = task_id or build_task_id(seed, targets)
     return Task(
         task_id=selected_task_id,

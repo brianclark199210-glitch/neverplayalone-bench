@@ -8,6 +8,7 @@ from typing import Any
 
 from npabench.agents.base import AgentSpec
 from npabench.config import RESULTS_DIR
+from npabench.console.mindlog import park_world
 from npabench.evaluation.evaluate import AgentMode, evaluate_single_agent
 from npabench.evaluation.run_trace import TraceEvent
 from npabench.missions.base import Task
@@ -20,22 +21,26 @@ def run_live(task: Task, prompt: str, emit: Emit) -> dict[str, Any]:
     mission_id = "animal_husbandry"
 
     def on_event(event: TraceEvent) -> None:
-        if event.kind in {"view", "viewer"}:
-            emit(event.kind, event.data)
+        if event.kind in {"view", "viewer", "board", "mind"}:
+            emit(event.kind, event.data if isinstance(event.data, dict) else {})
             return
         emit(*format_trace_event(event))
 
-    report = evaluate_single_agent(
-        AgentSpec(name="llm_agent", path=AGENT_DIR),
-        mission_id=mission_id,
-        seed=task.seed,
-        output_dir=RESULTS_DIR / "console" / task.task_id,
-        record=False,
-        agent_mode=AgentMode.HOST,
-        task=task,
-        materialize_prompt=False,
-        on_event=on_event,
-    )
+    output_dir = RESULTS_DIR / "runs" / task.task_id
+    try:
+        report = evaluate_single_agent(
+            AgentSpec(name="llm_agent", path=AGENT_DIR),
+            mission_id=mission_id,
+            seed=task.seed,
+            output_dir=output_dir,
+            record=False,
+            agent_mode=AgentMode.HOST,
+            task=task,
+            materialize_prompt=False,
+            on_event=on_event,
+        )
+    finally:
+        park_world(output_dir, RESULTS_DIR / "worlds" / task.task_id)
     error = report.raw.get("error")
     return {
         "score": float(report.raw.get("score", report.score) or 0),

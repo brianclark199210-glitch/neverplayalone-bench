@@ -3,6 +3,7 @@ import random
 from pydantic import Field
 
 from npabench.missions.base import Task
+from npabench.missions.world_seed import supported_world_seed
 
 from .config_schema import (
     CROP_ITEMS,
@@ -45,7 +46,7 @@ def generate_task(config: AnimalHusbandryConfig, seed: int, task_id: str | None 
     return AnimalTask(
         task_id=task_id or f"animal_husbandry_v4_1_{seed}_{target_suffix}",
         seed=seed,
-        minecraft_seed=random.Random(f"animal-world-v1:{seed}").getrandbits(64),
+        minecraft_seed=supported_world_seed(seed),
         targets=targets,
         starter_crops=starter_crops,
         prompt=prompt,

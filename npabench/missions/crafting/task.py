@@ -5,6 +5,7 @@ import random
 from pydantic import Field
 
 from npabench.missions.base import Task, TaskTarget
+from npabench.missions.world_seed import supported_world_seed
 from npabench.missions.crafting.config_schema import (
     Band,
     CraftingMissionConfig,
@@ -61,7 +62,7 @@ def generate_task(
     rng = random.Random(seed)
     targets = resolve_task_targets(base_config, rng)
     biome = rng.choice(base_config.biomes) if base_config.biomes else None
-    minecraft_seed = rng.getrandbits(64)
+    minecraft_seed = supported_world_seed(seed)
     selected_task_id = task_id or build_task_id(seed, targets)
     return CraftingTask(
         task_id=selected_task_id,

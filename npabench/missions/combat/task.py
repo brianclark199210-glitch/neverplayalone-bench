@@ -8,6 +8,7 @@ from itertools import product
 from pydantic import Field
 
 from npabench.missions.base import Task, TaskTarget
+from npabench.missions.world_seed import supported_world_seed
 from npabench.missions.combat.config_schema import (
     TIER_ORDER,
     CombatMissionConfig,
@@ -68,7 +69,7 @@ def generate_task(
     rng = random.Random(seed)
     targets = resolve_task_targets(base_config, rng)
     waves = build_waves(base_config, targets, rng)
-    minecraft_seed = random.Random(f"combat-world:{seed}").getrandbits(64)
+    minecraft_seed = supported_world_seed(seed)
     selected_id = task_id or build_task_id(seed, targets)
     return CombatTask(
         task_id=selected_id,

@@ -1,12 +1,7 @@
 {
-  "name": "npabench-llm-agent",
-  "version": "1.0.0",
+  "name": "npa-husbandry-agent",
+  "version": "0.1.0",
   "private": true,
-  "main": "index.js",
-  "dependencies": {
-    "mineflayer": "^4.20.0",
-    "mineflayer-pathfinder": "^2.4.5",
-    "prismarine-viewer": "^1.33.0",
-    "vec3": "^0.1.10"
-  }
+  "description": "SN98 animal husbandry agent. Uses only the sandbox's baked mineflayer + mineflayer-pathfinder.",
+  "main": "index.js"
 }

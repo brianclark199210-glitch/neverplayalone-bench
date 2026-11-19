@@ -5,24 +5,30 @@ Mine picks a seed and runs llm_agent on that animal_husbandry task.
 from __future__ import annotations
 
 import random
+import re
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from npabench.config import RESULTS_DIR
 from npabench.console.live import run_live
+from npabench.console.mindlog import reset_logs, write_second
 from npabench.missions.animal_husbandry.mission import AnimalHusbandryMission
 from npabench.missions.base import Task
 
 Runner = Callable[[Task, str, Callable[[str, Any], None]], dict[str, Any]]
 
 _FINISHED = {"ok", "timeout"}
+SEED_MIN = 0
+SEED_MAX = 5
 
 _IDLE_TIMELINE: tuple[tuple[str, str, str], ...] = (
-    ("seed", "Seed selected", "Press Mine to draw a seed"),
+    ("seed", "Seed selected", "Choose a seed from 0 to 5"),
     ("mission", "Mission generated", "The seed's targets appear here"),
     ("plan", "Agent planning", "The agent has not started"),
-    ("world", "Random terrain", "A new world is generated for the run"),
+    ("world", "Validator terrain", "The world uses the selected seed"),
     ("score", "Mission scored", "The score appears when the run finishes"),
 )
 
@@ -32,9 +38,15 @@ def _step(step_id: str, label: str, detail: str, state: str) -> dict[str, str]:
 
 
 class MiningSession:
-    def __init__(self, tick_seconds: float = 0.32, runner: Runner | None = None) -> None:
+    def __init__(
+        self,
+        tick_seconds: float = 0.32,
+        runner: Runner | None = None,
+        log_root: Path | None = None,
+    ) -> None:
         self._tick = tick_seconds
         self._runner = runner or run_live
+        self._log_root = log_root if log_root is not None else RESULTS_DIR / "runs"
         self._lock = threading.Lock()
         self._task: Task | None = None
         self._prompt = ""
@@ -55,6 +67,9 @@ class MiningSession:
         self._duration = 1200
         self._started_at: float | None = None
         self._ended_at: float | None = None
+        self._reset_board()
+        self._mind: list[dict[str, Any]] = []
+        self._mind_dir: Path | None = None
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -63,8 +78,8 @@ class MiningSession:
             body["terrain"] = None if self._terrain is None else dict(self._terrain)
             return body
 
-    def status(self, log_from: int = 0) -> dict[str, Any]:
-        """Mission state plus only the log lines the page does not have yet."""
+    def status(self, log_from: int = 0, mind_from: int = 0) -> dict[str, Any]:
+        """Mission state plus only the log lines and mind seconds the page does not have yet."""
         with self._lock:
             body = self._state()
             total = len(self._lines)
@@ -74,6 +89,13 @@ class MiningSession:
             body["log_from"] = start
             body["log_count"] = total
             body["logs"] = "\n".join(self._lines[start:])
+            mind_total = len(self._mind)
+            mind_reset = mind_from < 0 or mind_from > mind_total
+            mind_start = 0 if mind_reset else mind_from
+            body["mind_reset"] = mind_reset
+            body["mind_from"] = mind_start
+            body["mind_count"] = mind_total
+            body["mind"] = [dict(row) for row in self._mind[mind_start:]]
             return body
 
     def _state(self) -> dict[str, Any]:
@@ -94,13 +116,15 @@ class MiningSession:
             "timeline": [dict(step) for step in self._timeline],
             "viewer": None if self._viewer_port is None else {"port": self._viewer_port},
             "clock": self._clock(),
+            "board": self._public_board(),
+            "mind_now": None if not self._mind else dict(self._mind[-1]),
         }
 
     def start(self, seed: int | None = None, *, background: bool = True) -> dict[str, Any]:
         with self._lock:
             if self._status == "running":
                 raise RuntimeError("a mining run is already in progress")
-            chosen_seed = random.SystemRandom().randrange(1, 2**31) if seed is None else seed
+            chosen_seed = _choose_seed(seed)
             self._status = "running"
             self._error = None
 
@@ -153,6 +177,15 @@ class MiningSession:
             "kind": "animal_husbandry",
         }
         self._duration = duration_seconds
+        self._reset_board()
+        self._mind = []
+        self._mind_dir = self._log_root / task.task_id / "logs"
+        reset_logs(self._mind_dir)
+        crops = getattr(task, "starter_crops", None) or {}
+        if isinstance(crops, dict):
+            self._mission["starter_crops"] = {
+                str(name): int(count) for name, count in crops.items() if int(count) > 0
+            }
         self._timeline = _opening_timeline(task)
         self._append("info", f"mission {task.task_id}")
         self._append("ready", "prompt accepted")
@@ -185,9 +218,17 @@ class MiningSession:
                 if isinstance(message, dict):
                     self._remember_viewer(message)
                 return
+            if kind == "board":
+                if isinstance(message, dict):
+                    self._store_board(message)
+                return
+            if kind == "mind":
+                if isinstance(message, dict):
+                    self._store_mind(message)
+                return
             self._append(kind, str(message))
-            if "generating random terrain" in message:
-                self._touch("world", "active", "Generating random terrain")
+            if "validator terrain" in message or "generating random terrain" in message:
+                self._touch("world", "active", "Building the validator terrain")
             elif message.startswith("starting minecraft server"):
                 self._touch("world", "active", "Starting the Minecraft server")
             elif "prompt plan" in message:
@@ -284,6 +325,149 @@ class MiningSession:
         stamp = time.strftime("%H:%M:%S")
         self._lines.append(f"{stamp}  {kind:<7} {message}")
 
+    def _store_mind(self, data: dict[str, Any]) -> None:
+        plan = _sentence(data.get("plan") or data.get("think"))
+        observe = _sentence(data.get("observe"))
+        doing = _sentence(data.get("doing") or plan)
+        status = _sentence(data.get("status") or "Running")
+        if not plan and not observe and not doing:
+            return
+        second = _num(data.get("second"), limit=100_000) or len(self._mind) + 1
+        row = {
+            "second": second,
+            "doing": doing,
+            "status": status,
+            "plan": plan,
+            "think": plan,
+            "observe": observe,
+            "at": data.get("at") if isinstance(data.get("at"), list) else None,
+            "left_s": None if data.get("left_s") is None else _num(data.get("left_s"), limit=100_000),
+        }
+        self._mind.append(row)
+        if len(self._mind) > 3600:
+            self._mind = self._mind[-3600:]
+        if self._mind_dir is None:
+            return
+        try:
+            write_second(self._mind_dir, row)
+        except OSError:
+            return
+
+    def _reset_board(self) -> None:
+        self._animals: dict[str, dict[str, int]] = {}
+        self._bag: list[dict[str, Any]] = []
+        self._crops: list[dict[str, Any]] = []
+        self._pen = {"registered": False, "valid": None, "issues": 0}
+        self._pos: list[int] | None = None
+
+    def _store_board(self, data: dict[str, Any]) -> None:
+        animals: dict[str, dict[str, int]] = {}
+        herd = data.get("herd")
+        if isinstance(herd, dict):
+            for key, row in herd.items():
+                if key not in _SPECIES or not isinstance(row, dict):
+                    continue
+                adults = _num(row.get("adults"))
+                babies = _num(row.get("babies"))
+                count = _num(row.get("count")) or adults + babies
+                animals[str(key)] = {
+                    "adults": adults,
+                    "babies": babies,
+                    "count": count,
+                    "starters": _num(row.get("starters")),
+                    "offspring": _num(row.get("off", row.get("offspring"))),
+                    "raised": _num(row.get("offAdult", row.get("raised"))),
+                    "food": _num(row.get("food"), limit=100_000),
+                    "growth": _pct(row.get("growth")),
+                }
+        bag: list[dict[str, Any]] = []
+        raw_bag = data.get("bag") if isinstance(data.get("bag"), dict) else data.get("inv")
+        if isinstance(raw_bag, dict):
+            for key, value in raw_bag.items():
+                if not isinstance(key, str) or _ITEM.fullmatch(key) is None:
+                    continue
+                count = _num(value, limit=100_000)
+                if count <= 0:
+                    continue
+                bag.append({"item": key, "count": count})
+            bag.sort(key=lambda row: (-int(row["count"]), str(row["item"])))
+            bag = bag[:48]
+        raw_pen = data.get("pen") if isinstance(data.get("pen"), dict) else {}
+        valid = raw_pen.get("valid")
+        pos = None
+        raw_pos = data.get("pos")
+        if isinstance(raw_pos, (list, tuple)) and len(raw_pos) >= 3:
+            try:
+                pos = [int(raw_pos[0]), int(raw_pos[1]), int(raw_pos[2])]
+            except (TypeError, ValueError):
+                pos = None
+        self._animals = animals
+        self._bag = bag
+        self._crops = _read_crops(data.get("crops"))
+        self._pen = {
+            "registered": raw_pen.get("registered") is True,
+            "valid": True if valid is True else False if valid is False else None,
+            "issues": _num(raw_pen.get("issues"), limit=999),
+        }
+        self._pos = pos
+        if self._status != "running":
+            return
+        for target in self._targets:
+            row = animals.get(target["key"])
+            if row is None:
+                continue
+            target["have"] = min(target["target_count"], row["raised"])
+            state = "done" if target["have"] >= target["target_count"] else "active"
+            self._touch(
+                f"raise-{target['key']}",
+                state,
+                f"{target['have']} / {target['target_count']} · growth {row['growth']}%",
+            )
+
+    def _public_board(self) -> dict[str, Any]:
+        animals: list[dict[str, Any]] = []
+        total = 0
+        growth_weight = 0
+        growth_sum = 0
+        raised = 0
+        for target in self._targets:
+            row = self._animals.get(target["key"], {})
+            count = int(row.get("count") or 0)
+            growth = int(row.get("growth") or 0)
+            got = int(row.get("raised") or 0)
+            animals.append(
+                {
+                    "key": target["key"],
+                    "display_name": target["display_name"],
+                    "target_count": target["target_count"],
+                    "count": count,
+                    "adults": int(row.get("adults") or 0),
+                    "babies": int(row.get("babies") or 0),
+                    "starters": int(row.get("starters") or 0),
+                    "offspring": int(row.get("offspring") or 0),
+                    "raised": got,
+                    "food": int(row.get("food") or 0),
+                    "growth": growth,
+                }
+            )
+            total += count
+            raised += got
+            if count:
+                growth_weight += count
+                growth_sum += growth * count
+        return {
+            "animals": animals,
+            "bag": [dict(item) for item in self._bag],
+            "bag_total": sum(int(item["count"]) for item in self._bag),
+            "crops": [dict(row) for row in self._crops],
+            "pen": dict(self._pen),
+            "pos": None if self._pos is None else list(self._pos),
+            "animals_total": total,
+            "growth": 0 if growth_weight == 0 else int(round(growth_sum / growth_weight)),
+            "raised": raised,
+            "raised_goal": sum(int(target["target_count"]) for target in self._targets),
+        }
+
     def _earned(self) -> float:
         total = 0.0
         for target in self._targets:
@@ -293,6 +477,78 @@ class MiningSession:
             fraction = min(1.0, target["have"] / count)
             total += fraction * float(target["points"])
         return total
+
+
+_SPECIES = {"cow", "sheep", "pig", "chicken", "rabbit"}
+_ITEM = re.compile(r"^[a-z0-9_]+$")
+
+
+def _sentence(value: Any, limit: int = 500) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit]
+
+
+def _num(value: Any, *, limit: int = 500) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if number < 0:
+        return 0
+    return min(number, limit)
+
+
+def _pct(value: Any) -> int:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, number))
+
+
+def _read_crops(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return []
+    buckets: dict[str, list[int]] = {}
+    empty = 0
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
+        count = _num(value, limit=5000)
+        if count <= 0:
+            continue
+        if key == "empty":
+            empty += count
+            continue
+        name, _, age_text = key.partition(":")
+        if not name or _ITEM.fullmatch(name) is None:
+            continue
+        try:
+            age = int(age_text)
+        except ValueError:
+            age = 0
+        age = max(0, min(7, age))
+        plots, aged = buckets.get(name, [0, 0])
+        buckets[name] = [plots + count, aged + count * age]
+    rows = [
+        {
+            "name": name,
+            "plots": plots,
+            "growth": 0 if plots <= 0 else max(0, min(100, round(100 * aged / (plots * 7)))),
+        }
+        for name, (plots, aged) in sorted(buckets.items())
+    ]
+    if empty:
+        rows.append({"name": "empty", "plots": empty, "growth": 0})
+    return rows
+
+
+def _choose_seed(seed: int | None) -> int:
+    if seed is None:
+        return random.SystemRandom().randrange(SEED_MIN, SEED_MAX + 1)
+    if type(seed) is not int or not SEED_MIN <= seed <= SEED_MAX:
+        raise ValueError(f"seed must be an integer from {SEED_MIN} to {SEED_MAX}")
+    return seed
 
 
 def _mission_for_seed(seed: int) -> tuple[Task, int]:
@@ -317,6 +573,8 @@ def _opening_timeline(task: Task) -> list[dict[str, str]]:
                 "pending",
             )
         )
-    steps.append(_step("world", "Random terrain", "Waiting for the world", "pending"))
+    steps.append(
+        _step("world", "Validator terrain", f"World seed {task.minecraft_seed}", "pending")
+    )
     steps.append(_step("score", "Mission scored", "Waiting for the run to finish", "pending"))
     return steps

@@ -121,7 +121,7 @@ def evaluate_single_agent(
         task = mission.materialize_task(base_config, task, root_output_dir)
     mission_config = mission.build_mission_config(base_config, task)
     (root_output_dir / "task.json").write_text(task.model_dump_json(indent=2))
-    _notify(on_event, "generating random terrain", minecraft_seed=task.minecraft_seed)
+    _notify(on_event, "building validator terrain", minecraft_seed=task.minecraft_seed)
     reference_world_dir = ReferenceWorldBuilder().build(
         mission,
         mission_config,

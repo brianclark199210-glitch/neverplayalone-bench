@@ -64,12 +64,43 @@ def write_biome_datapack(data_dir: Path, biome: str) -> None:
     (worldgen_dir / "single_biome.json").write_text(json.dumps(preset))
 
 
+def release_slot_ports(agent_run_slot: AgentRunSlot) -> None:
+    """Drop a leftover eval container that still owns this slot's host ports.
+
+    The terrain builder and the live server publish the same ports under
+    different names. A previous run that was interrupted leaves the live
+    server running, and the next start then fails with "port is already allocated".
+    """
+    ports = {int(agent_run_slot.game_port), int(agent_run_slot.rcon_port)}
+    listed = subprocess.run(
+        ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Ports}}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if listed.returncode != 0:
+        return
+    for line in listed.stdout.splitlines():
+        name, _, published = line.partition("\t")
+        if not name.startswith("npabench-eval"):
+            continue
+        if not any(f":{port}->" in published for port in ports):
+            continue
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+
 def start_agent_run_slot(
     agent_run_slot: AgentRunSlot,
     mission_config: MissionConfig,
     reference_world_dir: Path | None = None,
 ) -> None:
     stop_agent_run_slot(agent_run_slot, quiet=True)
+    release_slot_ports(agent_run_slot)
     shutil.rmtree(agent_run_slot.data_dir, ignore_errors=True)
     if reference_world_dir is not None:
         if not reference_world_dir.exists():

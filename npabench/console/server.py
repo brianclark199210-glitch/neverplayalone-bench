@@ -25,6 +25,14 @@ _VIEWER_PORT = 3007
 _HOP_HEADERS = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}
 
 
+def _query_int(query: dict, key: str) -> int:
+    raw = query.get(key, ["0"])[0]
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
 def viewer_upstream(raw_path: str) -> str | None:
     """Map the dashboard world view onto the local Minecraft viewer."""
     parsed = urlsplit(raw_path)
@@ -65,12 +73,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path.rstrip("/") or "/"
         try:
             if path == "/api/session":
-                raw = parse_qs(urlsplit(self.path).query).get("logs", ["0"])[0]
-                try:
-                    log_from = int(raw)
-                except ValueError:
-                    log_from = 0
-                self._send_json(200, self.session.status(log_from))
+                query = parse_qs(urlsplit(self.path).query)
+                self._send_json(200, self.session.status(_query_int(query, "logs"), _query_int(query, "mind")))
                 return
             page = PAGES.get(path)
             if page is None:
@@ -96,14 +100,20 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             if length < 0 or length > _MAX_BODY:
                 self._send_json(400, {"detail": "request body is too large"})
                 return
+            payload: dict = {}
             if length:
                 raw = self.rfile.read(length)
                 try:
-                    json.loads(raw.decode("utf-8"))
+                    loaded = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     self._send_json(400, {"detail": "expected a JSON body"})
                     return
-            self.session.start()
+                if not isinstance(loaded, dict):
+                    self._send_json(400, {"detail": "expected a JSON object"})
+                    return
+                payload = loaded
+            seed = payload.get("seed", 0)
+            self.session.start(seed=seed)
             self._send_json(200, self.session.status(0))
         except ValueError as exc:
             self._send_json(400, {"detail": str(exc)})
@@ -209,7 +219,11 @@ def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
 
 
 def main() -> None:
-    serve()
+    import os
+
+    host = os.environ.get("NPABENCH_CONSOLE_HOST", "0.0.0.0")
+    port = int(os.environ.get("NPABENCH_CONSOLE_PORT", "8766"))
+    serve(host, port)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NPA Mining</title>
+  <title>NPA Husbandry</title>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
@@ -13,29 +13,115 @@
         <span class="mark">NPA</span>
         <div>
           <p class="k">Never Play Alone</p>
-          <h1>Mining</h1>
+          <h1>Animal husbandry</h1>
         </div>
       </div>
-      <p id="status" class="status idle">Idle</p>
+      <div class="top-side">
+        <p id="time-label" class="time-read">20:00</p>
+        <p id="status" class="status idle">Idle</p>
+      </div>
     </header>
 
-    <article class="panel view-panel">
+    <section class="stats" aria-label="Herd summary">
+      <article class="stat">
+        <p class="k">Animal count</p>
+        <p id="stat-animals" class="num">0</p>
+        <p id="stat-animals-note" class="muted">In the pen</p>
+      </article>
+      <article class="stat">
+        <p class="k">Growth</p>
+        <p id="stat-growth" class="num">0%</p>
+        <p id="stat-growth-note" class="muted">Toward adult</p>
+      </article>
+      <article class="stat">
+        <p class="k">Carry in bag</p>
+        <p id="stat-bag" class="num">0</p>
+        <p id="stat-bag-note" class="muted">Items held</p>
+      </article>
+      <article class="stat">
+        <p class="k">Raised adults</p>
+        <p id="stat-raised" class="num">0 / 0</p>
+        <p id="stat-raised-note" class="muted">Offspring that count</p>
+      </article>
+    </section>
+
+    <div id="timebar" class="bar time" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" aria-label="Time remaining">
+      <span id="time-fill"></span>
+    </div>
+
+    <div class="stage">
+      <article class="panel view-panel">
+        <div class="row">
+          <p class="k">Terrain</p>
+          <p id="view-pos" class="muted">The Minecraft world appears when the agent joins.</p>
+        </div>
+        <div class="world-frame">
+          <iframe id="world" title="Minecraft world" hidden></iframe>
+          <p id="world-wait" class="world-wait">Terrain appears when the agent joins.</p>
+        </div>
+      </article>
+
+      <article class="panel now-panel">
+        <div class="row">
+          <p class="k">Agent status</p>
+          <p id="mind-clock" class="muted"></p>
+        </div>
+        <dl class="now-grid">
+          <div>
+            <dt>Doing</dt>
+            <dd id="now-doing">Waiting to start</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd id="now-status">Idle</dd>
+          </div>
+          <div>
+            <dt>Planning</dt>
+            <dd id="mind-think">The plan appears once a second.</dd>
+          </div>
+          <div>
+            <dt>Observes</dt>
+            <dd id="mind-observe">Nothing observed yet.</dd>
+          </div>
+        </dl>
+        <p id="mind-file" class="muted"></p>
+      </article>
+    </div>
+
+    <article class="panel logs-panel">
       <div class="row">
-        <p class="k">Terrain</p>
-        <p id="view-pos" class="muted">The real Minecraft world appears when the agent joins.</p>
+        <p class="k">Agent action log</p>
+        <p class="muted">A new row every second</p>
       </div>
-      <iframe id="world" title="Minecraft world" hidden></iframe>
+      <div class="log-scroll">
+        <table id="logs" class="action-log">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Doing</th>
+              <th>Status</th>
+              <th>Planning</th>
+              <th>Observes</th>
+            </tr>
+          </thead>
+          <tbody id="mind">
+            <tr class="empty-row"><td colspan="5">Each second of the run is added here.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </article>
 
     <div class="layout">
       <section class="stack">
         <article class="panel">
-          <p class="k">Mission id</p>
+          <div class="row">
+            <p class="k">Mission</p>
+            <p id="mission-meta" class="muted"></p>
+          </div>
           <h2 id="mission-id">—</h2>
-          <p class="k">Content</p>
-          <p id="mission-content" class="content">Press Mine. A random seed runs animal husbandry.</p>
-          <p id="mission-meta" class="muted"></p>
-          <div id="targets" class="targets"></div>
+          <p id="mission-content" class="content">Choose a seed from 0 to 5, then start the run.</p>
+          <p id="pen-line" class="pen-line">The pen is registered once the agent fences a plot.</p>
+          <div id="targets" class="species-grid"></div>
         </article>
 
         <article class="panel">
@@ -48,33 +134,45 @@
           </div>
           <p id="score-line" class="muted">Score appears when the run finishes.</p>
         </article>
-
-        <article class="panel">
-          <div class="row">
-            <p class="k">Mission timeline</p>
-            <p id="time-label" class="muted">20:00</p>
-          </div>
-          <div id="timebar" class="bar time" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" aria-label="Time remaining">
-            <span id="time-fill"></span>
-          </div>
-          <ol id="timeline" class="timeline"></ol>
-        </article>
       </section>
 
       <section class="stack controls">
         <form id="mine-form" class="panel">
-          <p class="k">Mission</p>
-          <p class="muted">Mine draws a random seed and runs llm_agent on animal husbandry.</p>
+          <label class="k" for="seed">Seed</label>
+          <select id="seed" name="seed">
+            <option value="0" selected>0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+          <p class="muted">Seeds run from 0 to 5. Each seed asks for two species and a count of adult offspring.</p>
           <p id="form-error" class="error" role="alert"></p>
-          <button id="mine" type="submit">Mine</button>
+          <button id="mine" type="submit">Start run</button>
         </form>
 
-        <article class="panel logs-panel">
-          <label class="k" for="logs">Agent action logs</label>
-          <textarea id="logs" disabled spellcheck="false" aria-label="Agent action logs"></textarea>
+        <article class="panel">
+          <div class="row">
+            <p class="k">Carry in bag</p>
+            <p id="bag-count" class="muted"></p>
+          </div>
+          <ul id="bag" class="bag"></ul>
+          <p id="supplies" class="muted supplies"></p>
+        </article>
+
+        <article class="panel">
+          <p class="k">Crop growth</p>
+          <div id="crops" class="crops"></div>
+        </article>
+
+        <article class="panel">
+          <p class="k">Mission timeline</p>
+          <ol id="timeline" class="timeline"></ol>
         </article>
       </section>
     </div>
+
   </div>
   <script src="/app.js"></script>
 </body>

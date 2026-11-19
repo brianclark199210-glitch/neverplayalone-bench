@@ -51,7 +51,6 @@ class _AgentPhaseState:
     status: str = "ok"
 
 
-def run_single_evaluation(
 def _forward_trace_events(
     agent_run_trace: AgentRunTrace,
     on_event: Callable[[TraceEvent], None] | None,
@@ -68,6 +67,7 @@ def _forward_trace_events(
     agent_run_trace.watch(listener)
 
 
+def run_single_evaluation(
     mission: Mission,
     mission_config: MissionConfig,
     agent_run_slot: AgentRunSlot,
@@ -78,8 +78,8 @@ def _forward_trace_events(
     agent_mode: AgentMode,
     output_dir: Path,
     task_seed: int | None = None,
-) -> "AgentRunReport":
     on_event: Callable[[TraceEvent], None] | None = None,
+) -> "AgentRunReport":
     from npabench.evaluation.evaluate import AgentRunReport
 
     output_dir = _prepare_output_dir(output_dir)

@@ -5,6 +5,7 @@ import random
 from pydantic import Field
 
 from npabench.missions.base import Task, TaskTarget
+from npabench.missions.world_seed import supported_world_seed
 from npabench.missions.farming.config_schema import (
     CropMenuEntry,
     Difficulty,
@@ -60,7 +61,7 @@ def generate_task(
         _target_from_menu(key, entry, rng, index) for index, (key, entry) in enumerate(selected)
     ]
     selected_id = task_id or build_task_id(seed, targets)
-    minecraft_seed = random.Random(f"farming-world:{seed}").getrandbits(64)
+    minecraft_seed = supported_world_seed(seed)
     task = FarmingTask(
         task_id=selected_id,
         seed=seed,
