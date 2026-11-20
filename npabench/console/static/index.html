@@ -22,34 +22,11 @@
       </div>
     </header>
 
-    <section class="stats" aria-label="Herd summary">
-      <article class="stat">
-        <p class="k">Animal count</p>
-        <p id="stat-animals" class="num">0</p>
-        <p id="stat-animals-note" class="muted">In the pen</p>
-      </article>
-      <article class="stat">
-        <p class="k">Growth</p>
-        <p id="stat-growth" class="num">0%</p>
-        <p id="stat-growth-note" class="muted">Toward adult</p>
-      </article>
-      <article class="stat">
-        <p class="k">Carry in bag</p>
-        <p id="stat-bag" class="num">0</p>
-        <p id="stat-bag-note" class="muted">Items held</p>
-      </article>
-      <article class="stat">
-        <p class="k">Raised adults</p>
-        <p id="stat-raised" class="num">0 / 0</p>
-        <p id="stat-raised-note" class="muted">Offspring that count</p>
-      </article>
-    </section>
-
     <div id="timebar" class="bar time" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" aria-label="Time remaining">
       <span id="time-fill"></span>
     </div>
 
-    <div class="stage">
+    <div class="workspace">
       <article class="panel view-panel">
         <div class="row">
           <p class="k">Terrain</p>
@@ -61,30 +38,108 @@
         </div>
       </article>
 
-      <article class="panel now-panel">
+      <aside class="rail">
+        <section class="stats" aria-label="Herd summary">
+          <article class="stat">
+            <p class="k">Animal count</p>
+            <p id="stat-animals" class="num">0</p>
+            <p id="stat-animals-note" class="muted">In the pen</p>
+          </article>
+          <article class="stat">
+            <p class="k">Growth</p>
+            <p id="stat-growth" class="num">0%</p>
+            <p id="stat-growth-note" class="muted">Toward adult</p>
+          </article>
+          <article class="stat">
+            <p class="k">Raised adults</p>
+            <p id="stat-raised" class="num">0 / 0</p>
+            <p id="stat-raised-note" class="muted">Offspring that count</p>
+          </article>
+        </section>
+
+        <article class="panel now-panel">
+          <div class="row">
+            <p class="k">Agent status</p>
+            <p id="mind-clock" class="muted"></p>
+          </div>
+          <dl class="now-grid">
+            <div>
+              <dt>Doing</dt>
+              <dd id="now-doing">Waiting to start</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd id="now-status">Idle</dd>
+            </div>
+            <div>
+              <dt>Held Item</dt>
+              <dd id="now-tool">Empty</dd>
+            </div>
+            <div>
+              <dt>Planning</dt>
+              <dd id="mind-think">The plan appears once a second.</dd>
+            </div>
+            <div>
+              <dt>Observes</dt>
+              <dd id="mind-observe">Nothing observed yet.</dd>
+            </div>
+          </dl>
+          <p id="mind-file" class="muted"></p>
+        </article>
+
+        <article class="panel">
+          <div class="row">
+            <p class="k">Carry in bag</p>
+            <p id="bag-count" class="muted"></p>
+          </div>
+          <ul id="bag" class="bag"></ul>
+          <p id="supplies" class="muted supplies"></p>
+        </article>
+
+        <form id="mine-form" class="panel">
+          <label class="k" for="seed">Seed</label>
+          <input id="seed" name="seed" type="text" value="" placeholder="meadow-run" autocomplete="off" spellcheck="false" required />
+          <p class="muted">Type any text. The same text always builds the same world.</p>
+          <p id="form-error" class="error" role="alert"></p>
+          <button id="mine" type="submit">Start run</button>
+        </form>
+
+        <article class="panel">
+          <div class="row">
+            <p class="k">Mission progress</p>
+            <p id="progress-label" class="muted">0%</p>
+          </div>
+          <div id="scorebar" class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="progress-label">
+            <span id="progress-fill"></span>
+          </div>
+          <p id="score-line" class="muted">Score appears when the run finishes.</p>
+        </article>
+      </aside>
+    </div>
+
+    <section class="panel stat-chart" aria-label="Statistics over time">
+      <div class="row">
+        <p class="k">Statistics</p>
+        <p id="stat-chart-note" class="muted">Time</p>
+      </div>
+      <div id="stat-chart" class="dot-chart" role="img" aria-label="Animal count, growth, bag, and raised adults over time"></div>
+    </section>
+
+    <div class="layout">
+      <article class="panel">
         <div class="row">
-          <p class="k">Agent status</p>
-          <p id="mind-clock" class="muted"></p>
+          <p class="k">Mission</p>
+          <p id="mission-meta" class="muted"></p>
         </div>
-        <dl class="now-grid">
-          <div>
-            <dt>Doing</dt>
-            <dd id="now-doing">Waiting to start</dd>
-          </div>
-          <div>
-            <dt>Status</dt>
-            <dd id="now-status">Idle</dd>
-          </div>
-          <div>
-            <dt>Planning</dt>
-            <dd id="mind-think">The plan appears once a second.</dd>
-          </div>
-          <div>
-            <dt>Observes</dt>
-            <dd id="mind-observe">Nothing observed yet.</dd>
-          </div>
-        </dl>
-        <p id="mind-file" class="muted"></p>
+        <h2 id="mission-id">—</h2>
+        <p id="mission-content" class="content">Type a seed, then start the run.</p>
+        <p id="pen-line" class="pen-line">The pen is registered once the agent fences a plot.</p>
+        <div id="targets" class="species-grid"></div>
+      </article>
+
+      <article class="panel">
+        <p class="k">Mission timeline</p>
+        <ol id="timeline" class="timeline"></ol>
       </article>
     </div>
 
@@ -100,79 +155,17 @@
               <th>Time</th>
               <th>Doing</th>
               <th>Status</th>
+              <th>Held Item</th>
               <th>Planning</th>
               <th>Observes</th>
             </tr>
           </thead>
           <tbody id="mind">
-            <tr class="empty-row"><td colspan="5">Each second of the run is added here.</td></tr>
+            <tr class="empty-row"><td colspan="6">Each second of the run is added here.</td></tr>
           </tbody>
         </table>
       </div>
     </article>
-
-    <div class="layout">
-      <section class="stack">
-        <article class="panel">
-          <div class="row">
-            <p class="k">Mission</p>
-            <p id="mission-meta" class="muted"></p>
-          </div>
-          <h2 id="mission-id">—</h2>
-          <p id="mission-content" class="content">Choose a seed from 0 to 5, then start the run.</p>
-          <p id="pen-line" class="pen-line">The pen is registered once the agent fences a plot.</p>
-          <div id="targets" class="species-grid"></div>
-        </article>
-
-        <article class="panel">
-          <div class="row">
-            <p class="k">Mission progress</p>
-            <p id="progress-label" class="muted">0%</p>
-          </div>
-          <div id="scorebar" class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="progress-label">
-            <span id="progress-fill"></span>
-          </div>
-          <p id="score-line" class="muted">Score appears when the run finishes.</p>
-        </article>
-      </section>
-
-      <section class="stack controls">
-        <form id="mine-form" class="panel">
-          <label class="k" for="seed">Seed</label>
-          <select id="seed" name="seed">
-            <option value="0" selected>0</option>
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="4">4</option>
-            <option value="5">5</option>
-          </select>
-          <p class="muted">Seeds run from 0 to 5. Each seed asks for two species and a count of adult offspring.</p>
-          <p id="form-error" class="error" role="alert"></p>
-          <button id="mine" type="submit">Start run</button>
-        </form>
-
-        <article class="panel">
-          <div class="row">
-            <p class="k">Carry in bag</p>
-            <p id="bag-count" class="muted"></p>
-          </div>
-          <ul id="bag" class="bag"></ul>
-          <p id="supplies" class="muted supplies"></p>
-        </article>
-
-        <article class="panel">
-          <p class="k">Crop growth</p>
-          <div id="crops" class="crops"></div>
-        </article>
-
-        <article class="panel">
-          <p class="k">Mission timeline</p>
-          <ol id="timeline" class="timeline"></ol>
-        </article>
-      </section>
-    </div>
-
   </div>
   <script src="/app.js"></script>
 </body>

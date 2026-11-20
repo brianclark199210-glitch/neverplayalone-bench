@@ -23,6 +23,17 @@ PAGES = {
 _MAX_BODY = 32_768
 _VIEWER_PORT = 3007
 _HOP_HEADERS = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}
+_STATIC_CACHE: dict[Path, tuple[int, bytes]] = {}
+
+
+def _cached_bytes(path: Path) -> bytes:
+    stamp = path.stat().st_mtime_ns
+    cached = _STATIC_CACHE.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    body = path.read_bytes()
+    _STATIC_CACHE[path] = (stamp, body)
+    return body
 
 
 def _query_int(query: dict, key: str) -> int:
@@ -52,6 +63,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     session = MiningSession()
 
     def log_message(self, fmt: str, *args) -> None:
+        if urlsplit(self.path).path == "/api/session":
+            return
         log.info("%s %s", self.address_string(), fmt % args)
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
@@ -81,10 +94,27 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"detail": "not found"})
                 return
             file_path, content_type = page
-            self._send(200, file_path.read_bytes(), content_type)
+            self._send(200, _cached_bytes(file_path), content_type)
         except Exception as exc:
             log.exception("GET %s failed", path)
             self._send_json(500, {"detail": str(exc)})
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        if viewer_upstream(self.path) is not None:
+            self._probe_viewer()
+            return
+        self.do_GET()
+
+    def _probe_viewer(self) -> None:
+        try:
+            with socket.create_connection(("127.0.0.1", _VIEWER_PORT), 0.4):
+                pass
+        except OSError:
+            self._send(502, b"", "text/plain; charset=utf-8")
+            return
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
         upstream = viewer_upstream(self.path)

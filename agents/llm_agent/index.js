@@ -5,9 +5,8 @@
 
 const { Vec3 } = require('vec3');
 const log = require('./lib/log');
-const viewer = require('./lib/viewer');
 const { Clock } = require('./lib/clock');
-const { createBot, waitForSetup, waitFor } = require('./lib/session');
+const { createBot, waitForSetup, waitFor, settleView } = require('./lib/session');
 const { SeedX } = require('./lib/seedx'); // x4: world seed from the herds in view + exact villages (coordinator)
 const { Nav } = require('./lib/nav');
 // x17c (E1e, coordinator 11-15): S3's nav wrapper s3nav.v5 (fast-fail walk for silent empty paths, panel unpin and gate
@@ -20,7 +19,6 @@ const { Food } = require('./lib/food');
 const { Iron } = require('./lib/iron');
 const { Valve } = require('./lib/valve');
 const U = require('./lib/util');
-const mind = require('./lib/mind');
 // x14b (S3, coordinator 11-14): rotation-aware village start biome. The start piece's rotation is the first nextInt(4) after
 // setLargeFeatureSeed(seed, cx, cz), and its houses sit in the rotated quadrant, so the biome there types the village.
 // Workflow sn98-relocation-next (skeptic, 978 candidates within 700 with /locate truth): p >= 0.8 found 158 of 178 real hay
@@ -87,12 +85,11 @@ function connect() {
       bot.blockAt = (p, ...rest) => (p ? blockAt(p, ...rest) : null);
       bot._npaSafeBlockAt = true;
     }
-    try { viewer.open(bot, state); } catch (e) { log.info('viewer failed', { err: String(e).slice(0, 160) }); }
     if (!state.readySent) {
       state.readySent = true;
       log.emit('ready', { prompt: env.prompt.slice(0, 80) });
     }
-    mind.start(state, clock);
+    try { require('./lib/dashboard').open(bot, state, clock); } catch (e) { log.info('dashboard failed', { err: String(e).slice(0, 160) }); }
     if (!state.mainStarted) {
       state.mainStarted = true;
       try { if (state.seedx) state.seedx.start(); } catch (e) { log.info('seedx start error', { err: String(e).slice(0, 120) }); }
@@ -272,6 +269,7 @@ async function main() {
   state.spawn = spawn;
   state.setupAt = Date.now();
   log.info('spawn', { spawn, pos: bot.entity.position });
+  try { settleView(() => state.bot); } catch (_) { /* view only */ }
   state.nav = new Nav(bot0);
   const nav = liveProxy(() => state.nav);
   const pen = new Pen(bot0, state.nav, spawn);
@@ -295,28 +293,6 @@ async function main() {
   // x17a (E1b/c): rebind() moves these to a new bot after a reconnect (state.pen/herd/food were never set before, so it
   // rebound nothing); recover() uses them after a crash; the death handler reads state.food.iron
   state.pen = pen; state.herd = herd; state.food = food;
-  if (!state.boardTimer) {
-    state.boardTimer = setInterval(() => {
-      try {
-        const live = state.bot;
-        if (!state.herd || !live || !live.entity) return;
-        state.herd.scan();
-        const at = live.entity.position;
-        const status = state.pen && state.pen.lastStatus;
-        log.emit('board', {
-          herd: state.herd.summary(),
-          bag: U.counts(live),
-          crops: state.food ? state.food.cropCensus() : {},
-          pen: {
-            registered: !!(state.pen && state.pen.registered),
-            valid: status ? status.valid === true : null,
-            issues: status && status.issue_count ? status.issue_count : 0,
-          },
-          pos: [Math.round(at.x), Math.round(at.y), Math.round(at.z)],
-        });
-      } catch (_) { /* entity churn */ }
-    }, 2000);
-  }
   // x7: hay by village type, for cow tasks (x4 sv4: plains / savanna villages gave 4-10 bales each; snowy_plains 0 and 0,
   // taiga 0 - their trips brought potatoes only and the cow half stayed at 0-1)
   const HAY_W = { plains: 1, meadow: 1, sunflower_plains: 1, savanna: 1, savanna_plateau: 1, desert: 0.7, taiga: 0.35, snowy_plains: 0 };
@@ -591,6 +567,62 @@ async function main() {
   // failed first loot still retries here)
   if (!relocated && !(U.count(bot, 'oak_fence') >= 120 && U.count(bot, 'oak_fence_gate') >= 1)) await lootChest(bot, spawn);
   await descendIfPerched(bot);
+  // s1q11 v2 (S1, 11-18): a site with no fill to be had by hand, and no wood near. d1a 4705180799247201 is a terracotta badlands
+  // plateau at y108: terracotta dug by hand drops nothing, 2 dirt within 36, the nearest logs 110 blocks off (every 15 s reach to
+  // them timed out), so no tools and no fill; 76 fills, never registered, 0 in all 10 local games. Walk to the nearest grove first
+  // (40-block legs) and pick the site there, where the soil and the wood are (q11b: registered at 348 s, 16.7; husb_x31 never).
+  // v3: the logs at 110 blocks are at the edge of the loaded area and pickSite can miss them (q11e: pen.trees empty, the trigger
+  // stayed off and the 'leveling stuck' fallback moved at 248 s, registered at 462 s): look for logs again here when pickSite
+  // saw none, and check once more after the early-tools wood trip. (pen.build's 'leveling stuck' check stays as the last fallback.)
+  const treeLogIds = Object.values(bot.registry.blocksByName).filter((b) => /_log$/.test(b.name) && !/stripped/.test(b.name)).map((b) => b.id);
+  const treeLineEarly = async (tag, fresh) => {
+    if (relocated || !site || site.fills <= 12 || pen._treeLineTried || pen._woodOrPick() || clock.remaining() <= 700) return false;
+    // (v3.2: any tool in the bag means the wood trip got wood: its trees were in reach, so no walk)
+    if (bot.inventory.items().some((i) => /_(axe|shovel|pickaxe|hoe|sword)$/.test(i.name))) return false;
+    try {
+      const me = bot.entity.position;
+      let trees = pen.trees || [];
+      if (fresh || !trees.length) {
+        try { trees = bot.findBlocks({ matching: treeLogIds, maxDistance: 160, count: 4000, point: me }); } catch (_) { /* keep */ }
+      }
+      let dmin = Infinity;
+      for (const t of trees) dmin = Math.min(dmin, Math.hypot(t.x - me.x, t.z - me.z));
+      const fillHere = dmin > 48 && dmin <= 160 ? pen._fillNear(site) + pen._fillInside(site) + pen.fillCount() : null;
+      log.info('pen: tree line check', { tag, trees: trees.length, d: Number.isFinite(dmin) ? Math.round(dmin) : null, fills: site.fills, fillHere });
+      if (fillHere == null || fillHere >= site.fills) return false;
+      const g = Pen.grove(trees, me);
+      if (!g) return false;
+      pen._treeLineTried = true;
+      const t0 = Date.now();
+      const arrived = await nav.travel(new Vec3(g.x, g.y, g.z), { maxMs: 150000, range: 12, tag: 's1-treeline-early' });
+      const p = bot.entity.position;
+      const left = Math.hypot(p.x - g.x, p.z - g.z);
+      const movedFar = Math.hypot(p.x - home.x, p.z - home.z) > 40;
+      log.info('pen: tree line early', { tag, from: { x0: site.x0, z0: site.z0, y: site.y, fills: site.fills, fillHere }, grove: [g.x, g.y, g.z], d: Math.round(dmin), arrived, left: Math.round(left), movedFar, ms: Date.now() - t0 });
+      if (!(left <= 40 || movedFar)) {
+        pen._treeLineFailed = true; // the walk got nowhere: the 'leveling stuck' fallback does not try it again
+        return false;
+      }
+      // (v3.3, review: home and pen.spawn are staged, and put back when the new site is not taken)
+      const was = { home, spawn: pen.spawn, trees: pen.trees };
+      home = new Vec3(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z));
+      pen.spawn = home;
+      const s2 = await pickSite();
+      const fill2 = s2 ? pen._fillNear(s2) + pen._fillInside(s2) : null;
+      // at the grove any site will do (its wood makes the pickaxe and the fill); stalled on the way there, only a site whose
+      // fill lies around it
+      const taken = !!s2 && (left <= 40 || s2.fills <= 12 || fill2 >= s2.fills);
+      log.info('pen: tree line early site', { tag, site: s2 ? { x0: s2.x0, z0: s2.z0, y: s2.y, cost: Math.round(s2.cost), fills: s2.fills } : null, fill: fill2, taken, left_s: Math.round(clock.remaining()) });
+      if (!taken) {
+        home = was.home; pen.spawn = was.spawn; pen.trees = was.trees;
+        pen._treeLineFailed = true;
+        return false;
+      }
+      site = s2;
+      return true;
+    } catch (e) { log.info('tree line early error', { tag, err: String(e && e.stack).slice(0, 200) }); return false; }
+  };
+  await treeLineEarly('after kit', false);
   if (!site) {
     log.error('no pen site');
     return;
@@ -610,6 +642,12 @@ async function main() {
   if (site.cost > 100 && !state.bot.inventory.items().some((i) => /_shovel$/.test(i.name))) {
     // heavy leveling ahead: shovel, axe and pickaxe pay for themselves
     await food.earlyTools(Date.now() + 80000);
+  }
+  // s1q11 v3: the wood trip found no wood it could reach: look for a grove once more, with the logs in view now
+  if (await treeLineEarly('after tools', true)) {
+    pen.site = site;
+    pen.gate = pen.chooseGate(home);
+    nav.setPen(pen);
   }
   // Wheat tasks are decided by bone meal, and shears make it ~8x faster: mine the iron before the pen so it
   // smelts while the pen goes up (lambs are adult long before the first wheat anyway).
@@ -796,11 +834,19 @@ async function main() {
     await guardNow();
   }
   // Hand compost in reach: the composter, the kit in the ground and a load of compost before anything else (Food.compostFirst).
-  if (pen.registered && clock.remaining() > 600 && food.mealTask() && (!villageNow || relocPig)) {
+  // (S2 F1b, 11-18) with chickens to raise, the opening compost block waits: F1 made mealTask() true on chicken + pig tasks, and the
+  // up-to-110 s block right after the pen pushed the first chick birth from 322 to 533 s (x17d s2cp + g14, 43 pairs) and from 464 to
+  // 512 s (x22 suite), chicken -4.8 +- 2.0 a half on x31 (f1x31a/b, coordinator 02:52). It runs once from the main loop after the
+  // first chick is born or at 450 s.
+  const chickFirst = targets.some((t) => t.key === 'chicken') && herd.wantsMore('chicken');
+  if (pen.registered && clock.remaining() > 600 && food.mealTask() && (!villageNow || relocPig) && !chickFirst) {
     const t0 = Date.now();
     const r = await food.compostFirst(Date.now() + 110000);
     log.info('compost first', { ...r, ms: Date.now() - t0, left_s: Math.round(clock.remaining()) });
     await guardNow();
+  } else if (pen.registered && chickFirst && food.mealTask() && (!villageNow || relocPig)) {
+    state.f1bDefer = true;
+    log.info('compost first deferred', { left_s: Math.round(clock.remaining()) });
   }
   // Every species but chickens eats what bone meal grows, and shears make the meal: the trip right after the pen.
   // (it waited behind field, dandelion and herd steps: first iron at 250-500 s, shears ~550 s median in w56)
@@ -957,6 +1003,16 @@ async function main() {
         await food.craftWeapon();
         await herd.guard(th);
         continue;
+      }
+      // (S2 F1b) the deferred opening compost block, once: after the first chick or at 450 s, with 450+ s left
+      if (state.f1bDefer && clock.remaining() > 450 && (herd.members('chicken').some((r) => r.kind === 'offspring') || clock.elapsed() > 450)) {
+        state.f1bDefer = false;
+        if (food.mealTask()) {
+          const t0 = Date.now();
+          const r = await food.compostFirst(Date.now() + 90000);
+          log.info('compost first', { ...r, deferred: true, ms: Date.now() - t0, left_s: Math.round(clock.remaining()) });
+          continue;
+        }
       }
       // food work between lure trips: ripe crops, unused meal or a full pile waited otherwise (w106 round 10-30 t1: six
       // trips over 514-939 s, three of them empty, no compost / meal / harvest in between - the first lamb at 994 s)

@@ -51,10 +51,55 @@ def test_mine_picks_a_fresh_seed_when_none_is_given() -> None:
     assert len(calls[0].targets) == 2
 
 
-def test_seed_outside_zero_to_five_is_rejected() -> None:
+def test_spawn_marks_the_agent_in_the_world() -> None:
+    def runner(task: Task, prompt: str, emit) -> dict:
+        emit("info", "starting minecraft server")
+        emit("info", "spawn at the supply chest")
+        return {"score": 0.0, "max_score": 100.0, "status": "ok", "counts": {}, "error": None}
+
+    snapshot = MiningSession(tick_seconds=0, runner=runner).start(seed=0, background=False)
+    world = next(step for step in snapshot["timeline"] if step["id"] == "world")
+    assert world["state"] == "done"
+    assert world["detail"] == "Agent is in the world"
+
+
+def test_any_whole_seed_is_accepted() -> None:
+    calls: list[Task] = []
+    session = MiningSession(tick_seconds=0, runner=_recording_runner(calls))
+    snapshot = session.start(seed="48291", background=False)
+    assert snapshot["mission"]["seed"] == 48291
+    assert snapshot["mission"]["minecraft_seed"] == 48291
+    assert calls[0].seed == 48291
+
+    negative = MiningSession(tick_seconds=0, runner=_recording_runner([])).start(seed=-42, background=False)
+    assert negative["mission"]["seed"] == -42
+    assert negative["mission"]["minecraft_seed"] == (-42 & 0x7FFFFFFFFFFFFFFF)
+
+
+def test_text_seed_builds_the_same_world_every_time() -> None:
+    first = MiningSession(tick_seconds=0, runner=_recording_runner([])).start(seed="meadow-run", background=False)
+    second = MiningSession(tick_seconds=0, runner=_recording_runner([])).start(seed="  meadow-run  ", background=False)
+    other = MiningSession(tick_seconds=0, runner=_recording_runner([])).start(seed="12abc", background=False)
+    assert first["mission"]["seed_text"] == "meadow-run"
+    assert first["mission"]["seed"] == second["mission"]["seed"]
+    assert first["mission"]["minecraft_seed"] == second["mission"]["minecraft_seed"]
+    assert first["mission"]["seed"] != other["mission"]["seed"]
+    assert first["timeline"][0]["detail"] == "meadow-run"
+
+    huge = "28299634819238106159248760766855816119375932247633043835629792569978907022556"
+    # Hashing that text used to rename the mission to animal_husbandry_v4_1_1991516734225699350_chicken3_cow4.
+    kept = MiningSession(tick_seconds=0, runner=_recording_runner([])).start(seed=huge, background=False)
+    assert kept["mission"]["seed_text"] == huge
+    assert kept["mission"]["seed"] == int(huge)
+    assert huge in kept["mission"]["id"]
+    assert "1991516734225699350" not in kept["mission"]["id"]
+    assert "chicken3_cow4" not in kept["mission"]["id"]
+    assert {(row["key"], row["target_count"]) for row in kept["targets"]} == {("rabbit", 3), ("pig", 3)}
+    assert kept["timeline"][1]["detail"] == kept["mission"]["id"]
+
     session = MiningSession(tick_seconds=0, runner=_recording_runner([]))
-    with pytest.raises(ValueError, match="0 to 5"):
-        session.start(seed=6, background=False)
+    with pytest.raises(ValueError, match="Type a seed"):
+        session.start(seed="   ", background=False)
     assert session.snapshot()["status"] == "idle"
 
 
@@ -193,6 +238,10 @@ def test_board_reports_animal_count_growth_and_bag() -> None:
     assert board["crops"][-1] == {"name": "empty", "plots": 3, "growth": 0}
     assert board["pen"]["registered"] is True
     assert board["pos"] == [12, 64, -3]
+    assert snapshot["series"][-1]["animals"] == 3
+    assert snapshot["series"][-1]["growth"] == 40
+    assert snapshot["series"][-1]["bag"] == 46
+    assert snapshot["series"][-1]["raised"] == 1
     assert "oak_fence" not in snapshot["logs"]
     assert "starter_crops" in snapshot["mission"]
 
@@ -200,13 +249,15 @@ def test_board_reports_animal_count_growth_and_bag() -> None:
 def test_each_second_of_thinking_is_written(tmp_path: Path) -> None:
     def runner(task: Task, prompt: str, emit) -> dict:
         emit("mind", {"second": 1, "think": "Build the pen first.", "observe": "At 1, 64, 2. Sees 2 rabbit babies."})
-        emit("mind", {"second": 2, "think": "Still building the fence.", "observe": "At 2, 64, 2. Sees 2 rabbit babies."})
+        emit("mind", {"second": 2, "think": "Still building the fence.", "observe": "At 2, 64, 2. Sees 2 rabbit babies.", "tool": "lead", "held": "wheat"})
         emit("info", "prompt plan herd")
         return {"score": 0.0, "max_score": 100.0, "status": "ok", "counts": {}, "error": None}
 
     snapshot = MiningSession(tick_seconds=0, runner=runner, log_root=tmp_path).start(seed=2, background=False)
     assert snapshot["mind_now"]["second"] == 2
     assert snapshot["mind_now"]["think"] == "Still building the fence."
+    assert snapshot["mind_now"]["tool"] == "lead"
+    assert snapshot["mind_now"]["held"] == "wheat"
     assert "Build the pen" not in snapshot["logs"]
     log_dir = tmp_path / snapshot["mission"]["id"] / "logs"
     assert (log_dir / "thought.log").read_text().splitlines() == [
@@ -226,6 +277,7 @@ def test_each_second_of_thinking_is_written(tmp_path: Path) -> None:
     second = again.status(first["log_count"], first["mind_count"])
     assert second["mind"] == []
     assert second["mind_now"]["second"] == 2
+    assert len((log_dir / "thought.log").read_text().splitlines()) == 2
 
 
 def test_finished_trace_becomes_one_row_per_second(tmp_path: Path) -> None:
@@ -250,6 +302,24 @@ def test_finished_trace_becomes_one_row_per_second(tmp_path: Path) -> None:
     assert "flat ground" in thought[2]
     assert "No new sighting this second." in observe[1]
     assert "3 wheat" in observe[2]
+
+
+def test_status_sends_only_the_latest_mind_page(tmp_path: Path) -> None:
+    def runner(task: Task, prompt: str, emit) -> dict:
+        for second in range(1, 85):
+            emit("mind", {"second": second, "think": f"Step {second}.", "observe": "Sees the pen."})
+        return {"score": 0.0, "max_score": 100.0, "status": "ok", "counts": {}, "error": None}
+
+    session = MiningSession(tick_seconds=0, runner=runner, log_root=tmp_path)
+    session.start(seed=0, background=False)
+    body = session.status(0, 0)
+    assert body["mind_count"] == 84
+    assert body["mind_from"] == 4
+    assert len(body["mind"]) == 80
+    assert body["mind"][0]["second"] == 5
+    assert body["mind"][-1]["second"] == 84
+    caught_up = session.status(body["log_count"], body["mind_count"])
+    assert caught_up["mind"] == []
 
 
 def test_status_sends_only_new_log_lines() -> None:
@@ -296,14 +366,19 @@ def test_console_page_exposes_the_required_controls() -> None:
     assert 'id="prompt"' not in html
     assert "LLM prompt" not in html
     assert 'id="mine"' in html
-    assert 'id="seed"' in html
-    for number in range(6):
-        assert f'value="{number}"' in html
+    assert '<input id="seed"' in html
+    assert 'type="text"' in html
+    assert 'max="5"' not in html
+    assert "Type any text." in html
+    assert 'placeholder="meadow-run"' in html
+    assert "<select" not in html
+    assert 'id="stat-chart"' in html
     assert ">Start run</button>" in html
     assert "Animal count" in html
-    assert "Carry in bag" in html
+    assert html.count("Carry in bag") == 1
     assert 'id="bag"' in html
-    assert 'id="crops"' in html
+    assert 'id="crops"' not in html
+    assert "Crop growth" not in html
     assert 'id="stat-growth"' in html
     assert "Agent status" in html
     assert "Agent action log" in html

@@ -19,6 +19,7 @@ from npabench.evaluation.run_slot import AgentRunSlot
 from npabench.evaluation.single_runner import run_single_evaluation
 from npabench.missions.base import MissionConfig, Task
 from npabench.missions.registry import get_mission
+from npabench.missions.world_seed import resolve_task_seed
 from npabench.recording.recorder import RECORDER_DIR, is_available as recorder_available
 
 log = logging.getLogger("npabench.evaluate")
@@ -110,6 +111,7 @@ def evaluate_single_agent(
     materialize_prompt: bool = True,
     on_event: Callable[[TraceEvent], None] | None = None,
 ) -> AgentRunReport:
+    seed = resolve_task_seed(seed)
     mission = get_mission(mission_id)
     base_config = _load_mission_config(mission, config_path)
     if task is None:
@@ -170,6 +172,7 @@ def evaluate_multiple_agents(
 ) -> AgentBatchReport:
     if not agents:
         raise ValueError("evaluate_multiple_agents requires at least one agent")
+    seed = resolve_task_seed(seed)
     mission = get_mission(mission_id)
     selected_config_path = config_path or mission.default_config_path()
     base_config = _load_mission_config(mission, selected_config_path)

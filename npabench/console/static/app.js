@@ -18,6 +18,19 @@ function esc(value) {
   }[ch]));
 }
 
+const htmlCache = new Map();
+
+function setHTML(node, html) {
+  if (!node || htmlCache.get(node) === html) return;
+  htmlCache.set(node, html);
+  node.innerHTML = html;
+}
+
+function setText(node, text) {
+  if (!node || node.textContent === text) return;
+  node.textContent = text;
+}
+
 function itemName(name) {
   return String(name || "").replace(/_/g, " ");
 }
@@ -32,12 +45,11 @@ function showWorld(on) {
   if (!frame || !label) return;
   const wait = document.getElementById("world-wait");
   if (!on) {
-    if (!frame.hidden) {
-      frame.hidden = true;
-      frame.removeAttribute("src");
-    }
+    frame.hidden = true;
+    frame.removeAttribute("src");
     if (wait) wait.hidden = false;
     delete label.dataset.live;
+    delete label.dataset.pos;
     label.textContent = "The Minecraft world appears when the agent joins.";
     return;
   }
@@ -54,7 +66,7 @@ function probeWorld() {
   const now = Date.now();
   if (now - worldProbe < 4000) return;
   worldProbe = now;
-  fetch("/mc/", { cache: "no-store" })
+  fetch("/mc/", { method: "HEAD", cache: "no-store" })
     .then((response) => {
       if (response.ok) showWorld(true);
     })
@@ -146,19 +158,6 @@ function bagList(items) {
   }).join("");
 }
 
-function cropCards(crops) {
-  if (!crops.length) return `<p class="muted empty-note">No farmland tracked yet.</p>`;
-  return crops.map((crop) => {
-    const name = crop.name === "empty" ? "Bare farmland" : itemName(crop.name);
-    const growth = crop.name === "empty" ? 0 : Math.max(0, Math.min(100, crop.growth || 0));
-    const detail = crop.name === "empty" ? `${crop.plots} plots` : `${crop.plots} plots · ${growth}% grown`;
-    return `<div>
-      <div class="crop-top"><b>${esc(name)}</b><span class="muted">${detail}</span></div>
-      <div class="bar"><span style="width:${growth}%"></span></div>
-    </div>`;
-  }).join("");
-}
-
 function supplyLine(mission) {
   const crops = mission && mission.starter_crops;
   if (!crops || typeof crops !== "object") return "";
@@ -180,44 +179,42 @@ function paint(data) {
   document.getElementById("mission-id").textContent = mission ? mission.id : "—";
   document.getElementById("mission-content").textContent = mission
     ? mission.content
-    : "Choose a seed from 0 to 5, then start the run.";
+    : "Type a seed, then start the run.";
   document.getElementById("mission-meta").textContent = mission
-    ? `seed ${mission.seed} · ${mission.duration_seconds}s`
+    ? `seed ${mission.seed_text || mission.seed} · ${mission.duration_seconds}s`
     : "";
 
   const board = Object.assign(blankBoard(), data.board || {});
   const animals = speciesRows(data, board);
-  const targets = document.getElementById("targets");
-  targets.innerHTML = animals.length
-    ? animals.map((animal) => speciesCard(data, animal)).join("")
-    : `<p class="muted empty-note">Two species appear here after the run starts.</p>`;
+  setHTML(
+    document.getElementById("targets"),
+    animals.length
+      ? animals.map((animal) => speciesCard(data, animal)).join("")
+      : `<p class="muted empty-note">Two species appear here after the run starts.</p>`
+  );
 
   const babies = animals.reduce((sum, animal) => sum + (animal.babies || 0), 0);
   const adults = animals.reduce((sum, animal) => sum + (animal.adults || 0), 0);
   const raised = animals.reduce((sum, animal) => sum + scoredRaised(data, animal), 0);
   const goal = board.raised_goal || animals.reduce((sum, animal) => sum + (animal.target_count || 0), 0);
   const live = status === "running" || status === "done" || status === "error";
-  document.getElementById("stat-animals").textContent = live ? String(board.animals_total || 0) : "0";
-  document.getElementById("stat-animals-note").textContent = live
+  setText(document.getElementById("stat-animals"), live ? String(board.animals_total || 0) : "0");
+  setText(document.getElementById("stat-animals-note"), live
     ? `${babies} babies · ${adults} adults`
-    : "In the pen";
-  document.getElementById("stat-growth").textContent = live ? `${board.growth || 0}%` : "0%";
-  document.getElementById("stat-growth-note").textContent = animals.length
+    : "In the pen");
+  setText(document.getElementById("stat-growth"), live ? `${board.growth || 0}%` : "0%");
+  setText(document.getElementById("stat-growth-note"), animals.length
     ? animals.map((animal) => `${animal.display_name || animal.key} ${animal.growth || 0}%`).join(" · ")
-    : "Toward adult";
-  document.getElementById("stat-bag").textContent = live ? String(board.bag_total || 0) : "0";
-  const topBag = (board.bag || []).slice(0, 2).map((item) => `${item.count} ${itemName(item.item)}`);
-  document.getElementById("stat-bag-note").textContent = topBag.length ? topBag.join(" · ") : "Items held";
-  document.getElementById("stat-raised").textContent = goal ? `${raised} / ${goal}` : "0 / 0";
-  document.getElementById("stat-raised-note").textContent = status === "done"
+    : "Toward adult");
+  setText(document.getElementById("stat-raised"), goal ? `${raised} / ${goal}` : "0 / 0");
+  setText(document.getElementById("stat-raised-note"), status === "done"
     ? "Scored adult offspring"
-    : "Adult offspring in the pen";
+    : "Adult offspring in the pen");
 
-  document.getElementById("pen-line").textContent = penLine(board.pen, started);
-  document.getElementById("bag").innerHTML = bagList(board.bag || []);
-  document.getElementById("bag-count").textContent = board.bag_total ? `${board.bag_total} items` : "";
+  setText(document.getElementById("pen-line"), penLine(board.pen, started));
+  setHTML(document.getElementById("bag"), bagList(board.bag || []));
+  setText(document.getElementById("bag-count"), board.bag_total ? `${board.bag_total} items` : "");
   document.getElementById("supplies").textContent = supplyLine(mission);
-  document.getElementById("crops").innerHTML = cropCards(board.crops || []);
 
   const percent = Math.round((data.progress || 0) * 100);
   document.getElementById("progress-label").textContent = `${percent}%`;
@@ -230,19 +227,17 @@ function paint(data) {
     : `Score ${data.score} / ${data.max_score}`;
 
   const steps = data.timeline || [];
-  const timeline = document.getElementById("timeline");
-  const nextTimeline = steps.map((step) =>
+  setHTML(document.getElementById("timeline"), steps.map((step) =>
     `<li class="step ${esc(step.state)}"><span class="dot"></span><div><b>${esc(step.label)}</b><p class="muted">${esc(step.detail)}</p></div></li>`
-  ).join("");
-  if (timeline.innerHTML !== nextTimeline) timeline.innerHTML = nextTimeline;
+  ).join(""));
 
   appendLogs(data);
   const frame = document.getElementById("world");
   const port = data.viewer && data.viewer.port;
-  if (frame && port) showWorld(true);
-  else if ((data.status || "idle") !== "running") showWorld(false);
-  else probeWorld();
   const place = document.getElementById("view-pos");
+  if (place && !Array.isArray(board.pos)) delete place.dataset.pos;
+  if (frame && port) showWorld(true);
+  else showWorld(false);
   if (place && Array.isArray(board.pos)) {
     place.dataset.pos = board.pos.join(",");
     place.textContent = place.dataset.live
@@ -255,69 +250,169 @@ function paint(data) {
   mineButton.textContent = busy ? "Running…" : "Start run";
   if (data.error && status === "error") formError.textContent = data.error;
   paintMind(data, mission);
+  drawChart(data.series, data.clock && data.clock.duration_seconds);
+}
+
+let mindSignature = "";
+
+function heldLabel(row) {
+  const raw = row && Object.prototype.hasOwnProperty.call(row, "held") ? row.held : "";
+  const text = itemName(raw).trim();
+  if (!text || text === "none" || text === "empty") return "Empty";
+  return text;
 }
 
 function paintMind(data, mission) {
   const now = data.mind_now;
   const doing = now ? (now.doing || now.think || "Working") : "Waiting to start";
   const phase = now ? (now.status || "Running") : "Idle";
+  const tool = now ? heldLabel(now) : "Empty";
   const plan = now ? (now.plan || now.think || "") : "The plan appears once a second.";
   const seen = now ? (now.observe || "Nothing observed yet.") : "Nothing observed yet.";
-  document.getElementById("now-doing").textContent = doing;
-  document.getElementById("now-status").textContent = phase;
-  document.getElementById("mind-think").textContent = plan;
-  document.getElementById("mind-observe").textContent = seen;
-  document.getElementById("mind-clock").textContent = now ? formatClock(now.second || 0) : "";
-  document.getElementById("mind-file").textContent = mission
-    ? `Saved each second in results/runs/${mission.id}/logs`
-    : "";
+  setText(document.getElementById("now-doing"), doing);
+  setText(document.getElementById("now-status"), phase);
+  setText(document.getElementById("now-tool"), tool);
+  setText(document.getElementById("mind-think"), plan);
+  setText(document.getElementById("mind-observe"), seen);
+  setText(document.getElementById("mind-clock"), now ? formatClock(now.second || 0) : "");
+  setText(
+    document.getElementById("mind-file"),
+    mission ? `Saved each second in results/runs/${mission.id}/logs` : ""
+  );
+  const incoming = data.mind || [];
   if (data.mind_reset || data.mind_from === 0) {
     mindRows = [];
     mindCount = 0;
   }
-  const incoming = data.mind || [];
   if (incoming.length) mindRows = mindRows.concat(incoming);
+  if (mindRows.length > 80) mindRows = mindRows.slice(-80);
   if (Number.isInteger(data.mind_count)) mindCount = data.mind_count;
+  const last = mindRows[mindRows.length - 1];
+  const signature = last
+    ? `${mindRows.length}:${last.second}:${last.doing || ""}:${last.held || ""}:${last.observe || ""}`
+    : "empty";
+  if (signature === mindSignature) return;
+  mindSignature = signature;
   const body = document.getElementById("mind");
-  const recent = mindRows.slice(-80).reverse();
+  const scroller = body.parentElement;
+  const top = scroller ? scroller.scrollTop : 0;
+  const recent = mindRows.slice().reverse();
   const next = recent.length
     ? recent.map((row, index) => `<tr class="${index === 0 ? "fresh" : ""}">
-        <td class="when">${esc(formatClock(row.second || 0))}</td>
-        <td>${esc(row.doing || row.think || "")}</td>
-        <td><span class="tag">${esc(row.status || "Running")}</span></td>
-        <td>${esc(row.plan || row.think || "")}</td>
-        <td>${esc(row.observe || "")}</td>
+        <td class="when" data-label="Time">${esc(formatClock(row.second || 0))}</td>
+        <td data-label="Doing">${esc(row.doing || row.think || "")}</td>
+        <td data-label="Status"><span class="tag">${esc(row.status || "Running")}</span></td>
+        <td class="tool" data-label="Held">${esc(heldLabel(row))}</td>
+        <td data-label="Planning">${esc(row.plan || row.think || "")}</td>
+        <td data-label="Observes">${esc(row.observe || "")}</td>
       </tr>`).join("")
-    : `<tr class="empty-row"><td colspan="5">Each second of the run is added here.</td></tr>`;
-  if (body.innerHTML !== next) body.innerHTML = next;
+    : `<tr class="empty-row"><td colspan="6">Each second of the run is added here.</td></tr>`;
+  body.innerHTML = next;
+  if (scroller) scroller.scrollTop = top < 16 ? 0 : top;
+}
+
+let epoch = 0;
+
+function resetView() {
+  htmlCache.clear();
+  logCount = 0;
+  mindCount = 0;
+  mindRows = [];
+  mindSignature = "";
+  clockState = null;
+  worldProbe = 0;
+  showWorld(false);
+  const status = document.getElementById("status");
+  status.textContent = "Running";
+  status.className = "status running";
+  setText(document.getElementById("mission-id"), "—");
+  setText(document.getElementById("mission-content"), "Type a seed, then start the run.");
+  setText(document.getElementById("mission-meta"), "");
+  setHTML(document.getElementById("targets"), `<p class="muted empty-note">Two species appear here after the run starts.</p>`);
+  setText(document.getElementById("stat-animals"), "0");
+  setText(document.getElementById("stat-animals-note"), "In the pen");
+  setText(document.getElementById("stat-growth"), "0%");
+  setText(document.getElementById("stat-growth-note"), "Toward adult");
+  setText(document.getElementById("stat-raised"), "0 / 0");
+  setText(document.getElementById("stat-raised-note"), "Adult offspring in the pen");
+  setText(document.getElementById("pen-line"), "The pen is registered once the agent fences a plot.");
+  setHTML(document.getElementById("bag"), `<li class="empty">Nothing in the bag yet.</li>`);
+  setText(document.getElementById("bag-count"), "");
+  setText(document.getElementById("supplies"), "");
+  setText(document.getElementById("progress-label"), "0%");
+  document.getElementById("progress-fill").style.width = "0%";
+  document.getElementById("scorebar").setAttribute("aria-valuenow", "0");
+  setText(document.getElementById("score-line"), "The bar follows adult offspring raised so far. The official score lands when the run finishes.");
+  setHTML(document.getElementById("timeline"), "");
+  setText(document.getElementById("now-doing"), "Waiting to start");
+  setText(document.getElementById("now-status"), "Idle");
+  setText(document.getElementById("now-tool"), "Empty");
+  setText(document.getElementById("mind-think"), "The plan appears once a second.");
+  setText(document.getElementById("mind-observe"), "Nothing observed yet.");
+  setText(document.getElementById("mind-clock"), "");
+  setText(document.getElementById("mind-file"), "");
+  setHTML(document.getElementById("mind"), `<tr class="empty-row"><td colspan="6">Each second of the run is added here.</td></tr>`);
+  drawChart([], 1200);
+  drawClock();
 }
 
 async function refresh() {
+  const ticket = epoch;
   const response = await fetch(`/api/session?logs=${logCount}&mind=${mindCount}`, { cache: "no-store" });
+  if (ticket !== epoch) return;
   if (!response.ok) throw new Error(await response.text());
-  paint(await response.json());
+  const payload = await response.json();
+  if (ticket !== epoch) return;
+  paint(payload);
 }
+
+function readSeed() {
+  const text = String(seedInput.value).trim();
+  if (!text || text.length > 200) return null;
+  return text;
+}
+
+seedInput.addEventListener("invalid", (event) => {
+  event.preventDefault();
+  formError.textContent = "Type a seed.";
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   formError.textContent = "";
+  const seed = readSeed();
+  if (seed === null) {
+    formError.textContent = seedInput.value.trim().length > 200
+      ? "Seed text can be at most 200 characters."
+      : "Type a seed.";
+    return;
+  }
+  epoch += 1;
+  const ticket = epoch;
   mineButton.disabled = true;
+  resetView();
   try {
     const response = await fetch("/api/mine", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seed: Number(seedInput.value) }),
+      body: JSON.stringify({ seed }),
     });
     const payload = await response.json();
+    if (ticket !== epoch) return;
     if (!response.ok) {
       formError.textContent = payload.detail || "The run could not start.";
       mineButton.disabled = false;
+      epoch += 1;
+      refresh().catch(() => {});
       return;
     }
     paint(payload);
   } catch (error) {
+    if (ticket !== epoch) return;
     formError.textContent = error.message;
     mineButton.disabled = false;
+    epoch += 1;
+    refresh().catch(() => {});
   }
 });
 
@@ -344,6 +439,67 @@ function rememberClock(clock) {
   };
 }
 
+const CHART_SERIES = [
+  { key: "animals", label: "Animals", color: "#246b45" },
+  { key: "growth", label: "Growth", color: "#a56a12", max: 100, suffix: "%" },
+  { key: "bag", label: "Bag", color: "#3d6f8f" },
+  { key: "raised", label: "Raised", color: "#9a4632" },
+];
+
+function chartSamples(rows) {
+  const limit = 56;
+  if (rows.length <= limit) return rows;
+  const picked = [];
+  const step = (rows.length - 1) / (limit - 1);
+  for (let i = 0; i < limit; i++) picked.push(rows[Math.round(i * step)]);
+  return picked;
+}
+
+function drawChart(series, durationSeconds) {
+  const svg = document.getElementById("stat-chart");
+  const note = document.getElementById("stat-chart-note");
+  if (!svg) return;
+  const rows = (Array.isArray(series) ? series : [])
+    .map((point) => ({
+      t: Number(point && point.t),
+      animals: Number(point && point.animals) || 0,
+      growth: Number(point && point.growth) || 0,
+      bag: Number(point && point.bag) || 0,
+      raised: Number(point && point.raised) || 0,
+    }))
+    .filter((point) => Number.isFinite(point.t));
+  if (!rows.length) {
+    svg.innerHTML = '<p class="muted empty-note">Statistics fill in once the agent is in the world.</p>';
+    if (note) note.textContent = "Time";
+    return;
+  }
+  const span = Math.max(60, Number(durationSeconds) || 0, rows[rows.length - 1].t);
+  const dots = chartSamples(rows);
+  const ticks = [0, Math.round(span / 2), Math.round(span)];
+  const bands = CHART_SERIES.map((line) => {
+    const max = line.max || Math.max(1, ...rows.map((point) => point[line.key]));
+    const marks = dots.map((point) => {
+      const value = Math.max(0, Math.min(max, point[line.key]));
+      const x = 3 + (Math.max(0, point.t) / span) * 94;
+      const y = 8 + (1 - value / max) * 84;
+      const shown = `${point[line.key]}${line.suffix || ""}`;
+      return `<i style="left:${x.toFixed(2)}%;top:${y.toFixed(2)}%;background:${line.color}" title="${esc(formatClock(point.t))} · ${esc(line.label)} ${esc(shown)}"></i>`;
+    }).join("");
+    const last = rows[rows.length - 1][line.key];
+    return `<div class="chart-row">
+      <p class="chart-name"><b>${esc(line.label)}</b><span>0–${max}${line.suffix || ""}</span></p>
+      <div class="chart-plot">${marks}</div>
+      <p class="chart-now" style="color:${line.color}">${last}${line.suffix || ""}</p>
+    </div>`;
+  }).join("");
+  const axis = `<div class="chart-axis" aria-hidden="true"><span></span><span class="chart-ticks">${ticks.map((t) => `<b>${formatClock(t)}</b>`).join("")}</span><span></span></div>`;
+  svg.innerHTML = `${bands}${axis}`;
+  const last = rows[rows.length - 1];
+  if (note) {
+    note.textContent = `${formatClock(rows[0].t)}–${formatClock(last.t)} · animals ${last.animals} · growth ${last.growth}% · bag ${last.bag} · raised ${last.raised}`;
+  }
+}
+
 function formatClock(seconds) {
   const whole = Math.max(0, Math.ceil(seconds));
   const minutes = Math.floor(whole / 60);
@@ -366,8 +522,9 @@ function drawClock() {
   const remaining = Math.max(0, clockState.duration - (now - clockState.startedAt));
   const ratio = clockState.duration > 0 ? remaining / clockState.duration : 0;
   const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)));
-  fill.style.width = `${percent}%`;
+  const width = `${percent}%`;
+  if (fill.style.width !== width) fill.style.width = width;
   bar.classList.toggle("low", ratio <= 0.2 && clockState.endedAt == null);
   bar.setAttribute("aria-valuenow", String(percent));
-  label.textContent = formatClock(remaining);
+  setText(label, formatClock(remaining));
 }

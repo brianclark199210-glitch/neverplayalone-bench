@@ -17,15 +17,17 @@ from npabench.console.live import run_live
 from npabench.console.mindlog import reset_logs, write_second
 from npabench.missions.animal_husbandry.mission import AnimalHusbandryMission
 from npabench.missions.base import Task
+from npabench.missions.world_seed import resolve_task_seed
 
 Runner = Callable[[Task, str, Callable[[str, Any], None]], dict[str, Any]]
 
 _FINISHED = {"ok", "timeout"}
-SEED_MIN = 0
-SEED_MAX = 5
+SEED_MIN = -2**63
+SEED_MAX = 2**63 - 1
+_MIND_PAGE = 80
 
 _IDLE_TIMELINE: tuple[tuple[str, str, str], ...] = (
-    ("seed", "Seed selected", "Choose a seed from 0 to 5"),
+    ("seed", "Seed selected", "Type any text"),
     ("mission", "Mission generated", "The seed's targets appear here"),
     ("plan", "Agent planning", "The agent has not started"),
     ("world", "Validator terrain", "The world uses the selected seed"),
@@ -92,10 +94,14 @@ class MiningSession:
             mind_total = len(self._mind)
             mind_reset = mind_from < 0 or mind_from > mind_total
             mind_start = 0 if mind_reset else mind_from
+            rows = self._mind[mind_start:]
+            if len(rows) > _MIND_PAGE:
+                rows = rows[-_MIND_PAGE:]
+                mind_start = mind_total - _MIND_PAGE
             body["mind_reset"] = mind_reset
             body["mind_from"] = mind_start
             body["mind_count"] = mind_total
-            body["mind"] = [dict(row) for row in self._mind[mind_start:]]
+            body["mind"] = [dict(row) for row in rows]
             return body
 
     def _state(self) -> dict[str, Any]:
@@ -117,6 +123,7 @@ class MiningSession:
             "viewer": None if self._viewer_port is None else {"port": self._viewer_port},
             "clock": self._clock(),
             "board": self._public_board(),
+            "series": [dict(point) for point in self._series],
             "mind_now": None if not self._mind else dict(self._mind[-1]),
         }
 
@@ -124,7 +131,7 @@ class MiningSession:
         with self._lock:
             if self._status == "running":
                 raise RuntimeError("a mining run is already in progress")
-            chosen_seed = _choose_seed(seed)
+            chosen_seed, seed_text = _resolve_seed(seed)
             self._status = "running"
             self._error = None
 
@@ -138,7 +145,7 @@ class MiningSession:
             raise
 
         with self._lock:
-            self._install(task, task.prompt, duration)
+            self._install(task, task.prompt, duration, seed_text)
 
         if background:
             threading.Thread(target=self._play, name="mining-console", daemon=True).start()
@@ -146,7 +153,7 @@ class MiningSession:
             self._play()
         return self.snapshot()
 
-    def _install(self, task: Task, prompt: str, duration_seconds: int) -> None:
+    def _install(self, task: Task, prompt: str, duration_seconds: int, seed_text: str) -> None:
         self._task = task
         self._prompt = prompt
         self._lines = []
@@ -171,6 +178,7 @@ class MiningSession:
         self._mission = {
             "id": task.task_id,
             "seed": task.seed,
+            "seed_text": seed_text,
             "minecraft_seed": task.minecraft_seed,
             "content": prompt,
             "duration_seconds": duration_seconds,
@@ -186,7 +194,7 @@ class MiningSession:
             self._mission["starter_crops"] = {
                 str(name): int(count) for name, count in crops.items() if int(count) > 0
             }
-        self._timeline = _opening_timeline(task)
+        self._timeline = _opening_timeline(task, seed_text)
         self._append("info", f"mission {task.task_id}")
         self._append("ready", "prompt accepted")
 
@@ -209,6 +217,7 @@ class MiningSession:
                 self._append("error", str(exc))
 
     def _emit(self, kind: str, message: Any) -> None:
+        mind_log: tuple[Path, dict[str, Any]] | None = None
         with self._lock:
             if kind == "view":
                 if isinstance(message, dict):
@@ -217,6 +226,7 @@ class MiningSession:
             if kind == "viewer":
                 if isinstance(message, dict):
                     self._remember_viewer(message)
+                self._touch("world", "done", "Agent is in the world")
                 return
             if kind == "board":
                 if isinstance(message, dict):
@@ -224,16 +234,25 @@ class MiningSession:
                 return
             if kind == "mind":
                 if isinstance(message, dict):
-                    self._store_mind(message)
-                return
-            self._append(kind, str(message))
-            if "validator terrain" in message or "generating random terrain" in message:
-                self._touch("world", "active", "Building the validator terrain")
-            elif message.startswith("starting minecraft server"):
-                self._touch("world", "active", "Starting the Minecraft server")
-            elif "prompt plan" in message:
-                self._touch("plan", "done", "Prompt analyzed")
-                self._touch("world", "done", "Agent is in the world")
+                    mind_log = self._store_mind(message)
+            else:
+                text = str(message)
+                self._append(kind, text)
+                if text.startswith("targets"):
+                    self._touch("plan", "done", "Targets read")
+                elif "validator terrain" in text or "generating random terrain" in text:
+                    self._touch("world", "active", "Building the validator terrain")
+                elif text.startswith("starting minecraft server"):
+                    self._touch("world", "active", "Starting the Minecraft server")
+                elif text.startswith("spawn") or "prompt plan" in text:
+                    self._touch("plan", "done", "Prompt analyzed" if "prompt plan" in text else "Targets read")
+                    self._touch("world", "done", "Agent is in the world")
+        if mind_log is None:
+            return
+        try:
+            write_second(*mind_log)
+        except OSError:
+            return
 
     def _remember_viewer(self, data: dict[str, Any]) -> None:
         try:
@@ -325,18 +344,21 @@ class MiningSession:
         stamp = time.strftime("%H:%M:%S")
         self._lines.append(f"{stamp}  {kind:<7} {message}")
 
-    def _store_mind(self, data: dict[str, Any]) -> None:
+    def _store_mind(self, data: dict[str, Any]) -> tuple[Path, dict[str, Any]] | None:
         plan = _sentence(data.get("plan") or data.get("think"))
         observe = _sentence(data.get("observe"))
         doing = _sentence(data.get("doing") or plan)
         status = _sentence(data.get("status") or "Running")
+        tool = _sentence(data.get("tool") or "none", limit=80)
         if not plan and not observe and not doing:
-            return
+            return None
         second = _num(data.get("second"), limit=100_000) or len(self._mind) + 1
         row = {
             "second": second,
             "doing": doing,
             "status": status,
+            "tool": tool or "none",
+            "held": _held_item(data),
             "plan": plan,
             "think": plan,
             "observe": observe,
@@ -347,18 +369,17 @@ class MiningSession:
         if len(self._mind) > 3600:
             self._mind = self._mind[-3600:]
         if self._mind_dir is None:
-            return
-        try:
-            write_second(self._mind_dir, row)
-        except OSError:
-            return
+            return None
+        return self._mind_dir, row
 
     def _reset_board(self) -> None:
+        self._series: list[dict[str, int]] = []
         self._animals: dict[str, dict[str, int]] = {}
         self._bag: list[dict[str, Any]] = []
         self._crops: list[dict[str, Any]] = []
         self._pen = {"registered": False, "valid": None, "issues": 0}
         self._pos: list[int] | None = None
+        self._board_view: dict[str, Any] | None = None
 
     def _store_board(self, data: dict[str, Any]) -> None:
         animals: dict[str, dict[str, int]] = {}
@@ -410,6 +431,8 @@ class MiningSession:
             "issues": _num(raw_pen.get("issues"), limit=999),
         }
         self._pos = pos
+        self._board_view = None
+        self._note_stat()
         if self._status != "running":
             return
         for target in self._targets:
@@ -425,6 +448,8 @@ class MiningSession:
             )
 
     def _public_board(self) -> dict[str, Any]:
+        if self._board_view is not None:
+            return self._board_view
         animals: list[dict[str, Any]] = []
         total = 0
         growth_weight = 0
@@ -455,7 +480,7 @@ class MiningSession:
             if count:
                 growth_weight += count
                 growth_sum += growth * count
-        return {
+        self._board_view = {
             "animals": animals,
             "bag": [dict(item) for item in self._bag],
             "bag_total": sum(int(item["count"]) for item in self._bag),
@@ -467,6 +492,27 @@ class MiningSession:
             "raised": raised,
             "raised_goal": sum(int(target["target_count"]) for target in self._targets),
         }
+        return self._board_view
+
+    def _note_stat(self) -> None:
+        if self._status != "running" or self._started_at is None:
+            return
+        board = self._public_board()
+        second = int(max(0, time.time() - self._started_at))
+        point = {
+            "t": second,
+            "animals": int(board["animals_total"]),
+            "growth": int(board["growth"]),
+            "bag": int(board["bag_total"]),
+            "raised": int(board["raised"]),
+        }
+        if self._series and second - int(self._series[-1]["t"]) < 2:
+            point["t"] = max(second, int(self._series[-1]["t"]))
+            self._series[-1] = point
+            return
+        self._series.append(point)
+        if len(self._series) > 700:
+            self._series = self._series[-700:]
 
     def _earned(self) -> float:
         total = 0.0
@@ -481,6 +527,16 @@ class MiningSession:
 
 _SPECIES = {"cow", "sheep", "pig", "chicken", "rabbit"}
 _ITEM = re.compile(r"^[a-z0-9_]+$")
+
+
+def _held_item(data: dict[str, Any]) -> str:
+    if "held" not in data:
+        return ""
+    raw = data.get("held")
+    text = _sentence(raw, limit=80)
+    if text.lower() in {"", "none", "empty"}:
+        return ""
+    return text
 
 
 def _sentence(value: Any, limit: int = 500) -> str:
@@ -543,12 +599,22 @@ def _read_crops(raw: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _choose_seed(seed: int | None) -> int:
+def _resolve_seed(seed: int | str | None) -> tuple[int, str]:
+    """The typed text is the seed. A whole number is used as itself; any other text is hashed."""
     if seed is None:
-        return random.SystemRandom().randrange(SEED_MIN, SEED_MAX + 1)
-    if type(seed) is not int or not SEED_MIN <= seed <= SEED_MAX:
-        raise ValueError(f"seed must be an integer from {SEED_MIN} to {SEED_MAX}")
-    return seed
+        value = random.SystemRandom().randrange(0, 6)
+        return value, str(value)
+    if isinstance(seed, bool) or not isinstance(seed, (int, str)):
+        raise ValueError("seed must be text")
+    if isinstance(seed, int):
+        return seed, str(seed)
+    text = seed.strip()
+    if not text:
+        raise ValueError("Type a seed.")
+    if len(text) > 200:
+        raise ValueError("Seed text can be at most 200 characters.")
+    # A typed number stays that number. Hashing the digits used to put a different seed in the mission id.
+    return resolve_task_seed(text), text
 
 
 def _mission_for_seed(seed: int) -> tuple[Task, int]:
@@ -558,9 +624,9 @@ def _mission_for_seed(seed: int) -> tuple[Task, int]:
     return task, int(config.duration_seconds)
 
 
-def _opening_timeline(task: Task) -> list[dict[str, str]]:
+def _opening_timeline(task: Task, seed_text: str) -> list[dict[str, str]]:
     steps = [
-        _step("seed", "Seed selected", str(task.seed), "done"),
+        _step("seed", "Seed selected", seed_text, "done"),
         _step("mission", "Mission generated", task.task_id, "done"),
         _step("plan", "Agent planning", "Reading the seed's targets", "active"),
     ]
@@ -574,7 +640,7 @@ def _opening_timeline(task: Task) -> list[dict[str, str]]:
             )
         )
     steps.append(
-        _step("world", "Validator terrain", f"World seed {task.minecraft_seed}", "pending")
+        _step("world", "Validator terrain", f"World seed {seed_text}", "pending")
     )
     steps.append(_step("score", "Mission scored", "Waiting for the run to finish", "pending"))
     return steps

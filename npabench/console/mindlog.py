@@ -3,30 +3,60 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 _LOGS = ("mind.jsonl", "thought.log", "observe.log")
+_guard = threading.Lock()
+_open: dict[Path, tuple[TextIO, TextIO, TextIO]] = {}
 
 
 def reset_logs(directory: Path) -> None:
-    if not directory.exists():
-        return
-    for name in _LOGS:
-        path = directory / name
-        if path.exists():
-            path.unlink()
+    directory = directory.resolve()
+    with _guard:
+        _close_locked(directory)
+        if not directory.exists():
+            return
+        for name in _LOGS:
+            path = directory / name
+            if path.exists():
+                path.unlink()
 
 
 def write_second(directory: Path, row: dict[str, Any]) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = directory.resolve()
     stamp = clock_label(int(row.get("second") or 0))
-    with (directory / "mind.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    with (directory / "thought.log").open("a", encoding="utf-8") as handle:
-        handle.write(f"{stamp}  {row.get('think') or ''}\n")
-    with (directory / "observe.log").open("a", encoding="utf-8") as handle:
-        handle.write(f"{stamp}  {row.get('observe') or ''}\n")
+    lines = (
+        json.dumps(row, ensure_ascii=False) + "\n",
+        f"{stamp}  {row.get('think') or ''}\n",
+        f"{stamp}  {row.get('observe') or ''}\n",
+    )
+    with _guard:
+        handles = _open.get(directory)
+        if handles is None:
+            directory.mkdir(parents=True, exist_ok=True)
+            opened: list[TextIO] = []
+            try:
+                for name in _LOGS:
+                    opened.append((directory / name).open("a", encoding="utf-8"))
+            except OSError:
+                for handle in opened:
+                    handle.close()
+                raise
+            handles = (opened[0], opened[1], opened[2])
+            _open[directory] = handles
+        for handle, line in zip(handles, lines):
+            handle.write(line)
+            handle.flush()
+
+
+def _close_locked(directory: Path) -> None:
+    handles = _open.pop(directory, None)
+    if handles is None:
+        return
+    for handle in handles:
+        handle.close()
 
 
 def clock_label(second: int) -> str:
@@ -141,6 +171,76 @@ def _think(message: str, data: dict[str, Any]) -> str | None:
         return "The enclosure has gaps. A broken fence makes the whole score zero, so I repair it."
     if message == "census":
         return _census_think(data.get("herd") if isinstance(data.get("herd"), dict) else {})
+    if message == "reassess":
+        choice = str(data.get("choice") or "the next step").replace("_", " ")
+        return f"I look again and choose {choice}. The next look comes after this step."
+    if message == "tied to fence":
+        species = data.get("species") or "animal"
+        return f"I walked the {species} into the pen on a lead and tied that lead to a fence post so it stays inside."
+    if message == "lead in":
+        species = data.get("species") or "animal"
+        return f"I put a lead on the {species}. I am walking it through the gate, then I will tie it to a fence post."
+    if message == "lead crafted":
+        return "I crafted a lead. The next animal I find is walked into the pen and tied to a fence post."
+    if message == "lead moved on":
+        return "The lead did not finish the trip. I keep the animal in sight and try again."
+    if message in {"secure lure", "secured in pen"}:
+        species = data.get("species") or "animal"
+        return f"I lure the {species} into the pen and shut the gate, then look again."
+    if message == "secure moved on":
+        return "I could not tie or pen that animal in this pass. I look around and take the next step."
+    if message == "search animal":
+        species = data.get("species") or "animal"
+        return f"A {species} dropped out of sight. I walk back to where I last saw it."
+    if message == "carry in":
+        species = data.get("species") or "animal"
+        return f"I found a {species}. I am leading it into the pen and I will shut the gate."
+    if message == "carry moved on":
+        return "That animal did not stay in the pen this pass. I look again before the next one."
+    if message == "look for animals":
+        secured = data.get("secured") or "animal"
+        need = data.get("need") if isinstance(data.get("need"), list) else []
+        others = ", ".join(str(name) for name in need) or "the others"
+        return f"One {secured} is secured. I leave the fence posts and look for {others}."
+    if message == "search paused":
+        species = data.get("species") or "animal"
+        return f"I see a {species} while I am searching. I stop and lead it into the pen, then I go back to the search."
+    if message == "search animals first":
+        species = data.get("species") or "animal"
+        return f"The {species} adults in the pen cannot breed the whole goal yet. I look for more of them before I spend this time on food."
+    if message == "breed focus":
+        species = data.get("species") if isinstance(data.get("species"), list) else []
+        names = ", ".join(str(name) for name in species) or "the animals"
+        return f"The pen has enough adult {names} to breed the goal. I gather their food and breed them."
+    if message == "breed food":
+        species = data.get("species") if isinstance(data.get("species"), list) else []
+        names = ", ".join(str(name) for name in species) or "the breeding animals"
+        return f"I am gathering the food {names} need so I can breed them."
+    if message == "growth estimate":
+        late = data.get("late") or 0
+        left = data.get("left_s")
+        if late:
+            return f"I estimate the babies in the pen. {late} will not be adults before the mission ends, so I gather food and breed."
+        return f"I estimate the babies in the pen. The ones on schedule can still grow up with {left} seconds left."
+    if message == "growth late":
+        species = data.get("species") if isinstance(data.get("species"), list) else []
+        names = ", ".join(str(name) for name in species) or "babies"
+        return f"The {names} in the pen will not finish growing before time runs out. I gather food and breed the adults so more offspring can."
+    if message == "fence post start":
+        return "A tree is close and I need a fence post. I craft one, and I move on if it takes more than a minute."
+    if message == "fence post crafted":
+        return "The fence post is crafted. I look around before the next step."
+    if message == "fence post moved on":
+        if data.get("why") == "animal secured":
+            species = data.get("species") or "animal"
+            return f"The {species} is secured. I stop on the fence post and look for the other animals."
+        return "The fence post is not done. A minute is enough, so I move on and look again."
+    if message == "bucket start":
+        return "The pen is up. I try to make a bucket, and I move on if it takes more than a minute."
+    if message == "bucket crafted":
+        return "The bucket is made. I look around before the next step."
+    if message == "bucket moved on":
+        return "The bucket is not done. A minute is enough, so I move on and look again."
     if message == "lure start":
         species = data.get("species") or "animal"
         item = str(data.get("item") or "food").replace("_", " ")
